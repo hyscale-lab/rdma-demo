@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -28,14 +29,36 @@ import (
 
 const s3XMLNS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
+type storeEvictPolicy string
+
+const (
+	storeEvictPolicyReject storeEvictPolicy = "reject"
+	storeEvictPolicyFIFO   storeEvictPolicy = "fifo"
+)
+
+var errStoreCapacityExceeded = errors.New("store capacity exceeded")
+
+func parseStoreEvictPolicy(v string) (storeEvictPolicy, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", string(storeEvictPolicyReject):
+		return storeEvictPolicyReject, nil
+	case string(storeEvictPolicyFIFO):
+		return storeEvictPolicyFIFO, nil
+	default:
+		return "", fmt.Errorf("unsupported store eviction policy %q", v)
+	}
+}
+
 type serverConfig struct {
-	tcpListen     string
-	enableRDMA    bool
-	rdmaListen    string
-	rdmaBacklog   int
-	rdmaWorkers   int
-	region        string
-	maxObjectSize int64
+	tcpListen        string
+	enableRDMA       bool
+	rdmaListen       string
+	rdmaBacklog      int
+	rdmaWorkers      int
+	region           string
+	maxObjectSize    int64
+	storeMaxBytes    int64
+	storeEvictPolicy string
 }
 
 type runningServer struct {
@@ -53,13 +76,23 @@ func main() {
 	flag.IntVar(&cfg.rdmaWorkers, "rdma-accept-workers", awsrdmahttp.DefaultVerbsAcceptWorkers, "RDMA accept worker count")
 	flag.StringVar(&cfg.region, "region", "us-east-1", "region returned by server")
 	flag.Int64Var(&cfg.maxObjectSize, "max-object-size", 64<<20, "max object size in bytes, <=0 means unlimited")
+	flag.Int64Var(&cfg.storeMaxBytes, "store-max-bytes", 0, "max total in-memory bytes for stored objects, <=0 means unlimited")
+	flag.StringVar(&cfg.storeEvictPolicy, "store-evict-policy", string(storeEvictPolicyReject), "store eviction policy when full: reject or fifo")
 	flag.Parse()
 
 	if cfg.tcpListen == "" && !cfg.enableRDMA {
 		log.Fatal("at least one listener must be enabled")
 	}
+	if cfg.storeMaxBytes < 0 {
+		log.Fatal("store-max-bytes must be >= 0")
+	}
 
-	store := newMemoryStore()
+	evictPolicy, err := parseStoreEvictPolicy(cfg.storeEvictPolicy)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	store := newMemoryStore(cfg.storeMaxBytes, evictPolicy)
 	handler := &s3Handler{
 		store:         store,
 		region:        cfg.region,
@@ -139,8 +172,13 @@ func main() {
 }
 
 type memoryStore struct {
-	mu      sync.RWMutex
-	buckets map[string]map[string]storedObject
+	mu          sync.RWMutex
+	buckets     map[string]map[string]storedObject
+	maxBytes    int64
+	evictPolicy storeEvictPolicy
+	usedBytes   int64
+	fifoOrder   *list.List
+	orderIndex  map[string]*list.Element
 }
 
 type storedObject struct {
@@ -149,9 +187,13 @@ type storedObject struct {
 	lastModified time.Time
 }
 
-func newMemoryStore() *memoryStore {
+func newMemoryStore(maxBytes int64, evictPolicy storeEvictPolicy) *memoryStore {
 	return &memoryStore{
-		buckets: make(map[string]map[string]storedObject),
+		buckets:     make(map[string]map[string]storedObject),
+		maxBytes:    maxBytes,
+		evictPolicy: evictPolicy,
+		fifoOrder:   list.New(),
+		orderIndex:  make(map[string]*list.Element),
 	}
 }
 
@@ -173,30 +215,53 @@ func (s *memoryStore) bucketExists(name string) bool {
 func (s *memoryStore) deleteBucket(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.buckets[name]; !ok {
+	b, ok := s.buckets[name]
+	if !ok {
 		return false
+	}
+
+	for key := range b {
+		_ = s.removeObjectLocked(name, key)
 	}
 	delete(s.buckets, name)
 	return true
 }
 
-func (s *memoryStore) putObject(bucket, key string, body []byte) storedObject {
+func (s *memoryStore) putObject(bucket, key string, body []byte) (storedObject, error) {
 	sum := md5.Sum(body)
 	obj := storedObject{
 		body:         append([]byte(nil), body...),
 		etag:         `"` + hex.EncodeToString(sum[:]) + `"`,
 		lastModified: time.Now().UTC(),
 	}
+	newSize := int64(len(obj.body))
+	currentID := makeObjectID(bucket, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	b, ok := s.buckets[bucket]
 	if !ok {
 		b = make(map[string]storedObject)
 		s.buckets[bucket] = b
 	}
-	b[key] = obj
-	return obj
+
+	oldObj, oldExists := b[key]
+	oldSize := int64(0)
+	if oldExists {
+		oldSize = int64(len(oldObj.body))
+	}
+
+	if err := s.ensureCapacityLocked(currentID, oldExists, oldSize, newSize); err != nil {
+		return storedObject{}, err
+	}
+
+	if oldExists {
+		_ = s.removeObjectLocked(bucket, key)
+	}
+	s.insertObjectLocked(bucket, key, obj)
+
+	return obj, nil
 }
 
 func (s *memoryStore) getObject(bucket, key string) (storedObject, bool) {
@@ -213,15 +278,132 @@ func (s *memoryStore) getObject(bucket, key string) (storedObject, bool) {
 func (s *memoryStore) deleteObject(bucket, key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.removeObjectLocked(bucket, key)
+}
+
+func (s *memoryStore) ensureCapacityLocked(currentID string, hasCurrent bool, currentSize, newSize int64) error {
+	if s.maxBytes <= 0 {
+		return nil
+	}
+
+	effectiveUsed := s.usedBytes
+	if hasCurrent {
+		effectiveUsed -= currentSize
+	}
+	targetUsed := effectiveUsed + newSize
+	if targetUsed <= s.maxBytes {
+		return nil
+	}
+
+	switch s.evictPolicy {
+	case storeEvictPolicyReject:
+		return fmt.Errorf(
+			"%w: need=%d used=%d limit=%d",
+			errStoreCapacityExceeded, newSize, effectiveUsed, s.maxBytes,
+		)
+	case storeEvictPolicyFIFO:
+		needFree := targetUsed - s.maxBytes
+		var (
+			freed    int64
+			evictIDs []string
+		)
+		for e := s.fifoOrder.Front(); e != nil && freed < needFree; e = e.Next() {
+			id, _ := e.Value.(string)
+			if hasCurrent && id == currentID {
+				continue
+			}
+			evictObj, ok := s.lookupObjectByIDLocked(id)
+			if !ok {
+				continue
+			}
+			evictIDs = append(evictIDs, id)
+			freed += int64(len(evictObj.body))
+		}
+
+		if freed < needFree {
+			return fmt.Errorf(
+				"%w: need=%d used=%d limit=%d",
+				errStoreCapacityExceeded, newSize, effectiveUsed, s.maxBytes,
+			)
+		}
+
+		for _, id := range evictIDs {
+			s.evictObjectByIDLocked(id)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported eviction policy %q", s.evictPolicy)
+	}
+}
+
+func makeObjectID(bucket, key string) string {
+	return bucket + "\x00" + key
+}
+
+func splitObjectID(id string) (bucket, key string, ok bool) {
+	idx := strings.IndexByte(id, '\x00')
+	if idx <= 0 {
+		return "", "", false
+	}
+	return id[:idx], id[idx+1:], true
+}
+
+func (s *memoryStore) lookupObjectByIDLocked(id string) (storedObject, bool) {
+	bucket, key, ok := splitObjectID(id)
+	if !ok {
+		return storedObject{}, false
+	}
+	b, ok := s.buckets[bucket]
+	if !ok {
+		return storedObject{}, false
+	}
+	obj, ok := b[key]
+	return obj, ok
+}
+
+func (s *memoryStore) evictObjectByIDLocked(id string) {
+	bucket, key, ok := splitObjectID(id)
+	if !ok {
+		return
+	}
+	_ = s.removeObjectLocked(bucket, key)
+}
+
+func (s *memoryStore) removeObjectLocked(bucket, key string) bool {
 	b, ok := s.buckets[bucket]
 	if !ok {
 		return false
 	}
-	if _, ok := b[key]; !ok {
+	obj, ok := b[key]
+	if !ok {
 		return false
 	}
+
 	delete(b, key)
+	s.usedBytes -= int64(len(obj.body))
+
+	id := makeObjectID(bucket, key)
+	if elem, ok := s.orderIndex[id]; ok {
+		s.fifoOrder.Remove(elem)
+		delete(s.orderIndex, id)
+	}
 	return true
+}
+
+func (s *memoryStore) insertObjectLocked(bucket, key string, obj storedObject) {
+	b, ok := s.buckets[bucket]
+	if !ok {
+		b = make(map[string]storedObject)
+		s.buckets[bucket] = b
+	}
+	b[key] = obj
+	s.usedBytes += int64(len(obj.body))
+
+	id := makeObjectID(bucket, key)
+	if elem, ok := s.orderIndex[id]; ok {
+		s.fifoOrder.Remove(elem)
+	}
+	s.orderIndex[id] = s.fifoOrder.PushBack(id)
 }
 
 type listedObject struct {
@@ -370,7 +552,15 @@ func (h *s3Handler) handleObject(w http.ResponseWriter, r *http.Request, reqID, 
 			writeS3Error(w, http.StatusBadRequest, reqID, "InvalidRequest", err.Error(), bucket, key)
 			return
 		}
-		obj := h.store.putObject(bucket, key, body)
+		obj, err := h.store.putObject(bucket, key, body)
+		if err != nil {
+			if errors.Is(err, errStoreCapacityExceeded) {
+				writeS3Error(w, http.StatusInsufficientStorage, reqID, "InsufficientStorage", err.Error(), bucket, key)
+				return
+			}
+			writeS3Error(w, http.StatusInternalServerError, reqID, "InternalError", err.Error(), bucket, key)
+			return
+		}
 		w.Header().Set("ETag", obj.etag)
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:

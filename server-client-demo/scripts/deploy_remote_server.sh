@@ -10,6 +10,8 @@ RDMA_LISTEN="${RDMA_LISTEN:-10.0.1.2:19090}"
 ENABLE_RDMA="${ENABLE_RDMA:-true}"
 REGION="${REGION:-us-east-1}"
 MAX_OBJECT_SIZE="${MAX_OBJECT_SIZE:-67108864}"
+STORE_MAX_BYTES="${STORE_MAX_BYTES:-0}"
+STORE_EVICT_POLICY="${STORE_EVICT_POLICY:-reject}"
 
 LOCAL_BIN="$ROOT_DIR/bin/inmem-s3-server-rdma"
 REMOTE_LOG_DIR="$REMOTE_DIR/logs"
@@ -39,7 +41,7 @@ if [ -f '$REMOTE_PID_FILE' ]; then
 fi
 pkill -x inmem-s3-server-rdma >/dev/null 2>&1 || true
 sleep 1
-CMD=(\"./bin/inmem-s3-server-rdma\" \"--tcp-listen\" \"$TCP_LISTEN\" \"--region\" \"$REGION\" \"--max-object-size\" \"$MAX_OBJECT_SIZE\")
+CMD=(\"./bin/inmem-s3-server-rdma\" \"--tcp-listen\" \"$TCP_LISTEN\" \"--region\" \"$REGION\" \"--max-object-size\" \"$MAX_OBJECT_SIZE\" \"--store-max-bytes\" \"$STORE_MAX_BYTES\" \"--store-evict-policy\" \"$STORE_EVICT_POLICY\")
 if [ \"$ENABLE_RDMA\" = \"true\" ]; then
   CMD+=(\"--enable-rdma\" \"--rdma-listen\" \"$RDMA_LISTEN\")
 fi
