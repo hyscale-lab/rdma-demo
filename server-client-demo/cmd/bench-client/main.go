@@ -140,7 +140,7 @@ func parseFlags() benchConfig {
 	cfg := benchConfig{}
 	flag.StringVar(&cfg.mode, "mode", "tcp", "transport mode: tcp or rdma")
 	flag.StringVar(&cfg.op, "op", "put-get", "benchmark operation: put, get, put-get")
-	flag.StringVar(&cfg.endpoint, "endpoint", "http://127.0.0.1:9000", "S3 endpoint URL (or host:port)")
+	flag.StringVar(&cfg.endpoint, "endpoint", "http://127.0.0.1:10090", "S3 endpoint URL (or host:port)")
 	flag.StringVar(&cfg.region, "region", "us-east-1", "S3 region")
 	flag.StringVar(&cfg.bucket, "bucket", "bench-bucket", "bucket name")
 	flag.StringVar(&cfg.keyPrefix, "key-prefix", "bench-object", "object key prefix")

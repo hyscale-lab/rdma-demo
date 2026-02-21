@@ -69,9 +69,9 @@ type runningServer struct {
 
 func main() {
 	cfg := serverConfig{}
-	flag.StringVar(&cfg.tcpListen, "tcp-listen", "127.0.0.1:9000", "TCP listen address, empty disables TCP")
+	flag.StringVar(&cfg.tcpListen, "tcp-listen", "127.0.0.1:10090", "TCP listen address, empty disables TCP")
 	flag.BoolVar(&cfg.enableRDMA, "enable-rdma", false, "enable RDMA verbs listener")
-	flag.StringVar(&cfg.rdmaListen, "rdma-listen", "127.0.0.1:19090", "RDMA listen address")
+	flag.StringVar(&cfg.rdmaListen, "rdma-listen", "127.0.0.1:10190", "RDMA listen address")
 	flag.IntVar(&cfg.rdmaBacklog, "rdma-backlog", awsrdmahttp.DefaultVerbsListenBacklog, "RDMA listen backlog")
 	flag.IntVar(&cfg.rdmaWorkers, "rdma-accept-workers", awsrdmahttp.DefaultVerbsAcceptWorkers, "RDMA accept worker count")
 	flag.StringVar(&cfg.region, "region", "us-east-1", "region returned by server")

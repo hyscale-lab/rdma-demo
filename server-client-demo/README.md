@@ -41,7 +41,7 @@ go mod tidy
 
 ```bash
 go run ./cmd/inmem-s3-server \
-  --tcp-listen 127.0.0.1:9000
+  --tcp-listen 127.0.0.1:10090
 ```
 
 3. Run TCP benchmark
@@ -49,7 +49,7 @@ go run ./cmd/inmem-s3-server \
 ```bash
 go run ./cmd/bench-client \
   --mode tcp \
-  --endpoint http://127.0.0.1:9000 \
+  --endpoint http://127.0.0.1:10090 \
   --op put-get \
   --iterations 10000 \
   --concurrency 64 \
@@ -60,9 +60,9 @@ go run ./cmd/bench-client \
 
 ```bash
 go run -tags rdma ./cmd/inmem-s3-server \
-  --tcp-listen 127.0.0.1:9000 \
+  --tcp-listen 127.0.0.1:10090 \
   --enable-rdma \
-  --rdma-listen 127.0.0.1:19090
+  --rdma-listen 127.0.0.1:10190
 ```
 
 5. Run RDMA benchmark
@@ -70,7 +70,7 @@ go run -tags rdma ./cmd/inmem-s3-server \
 ```bash
 go run -tags rdma ./cmd/bench-client \
   --mode rdma \
-  --endpoint http://127.0.0.1:19090 \
+  --endpoint http://127.0.0.1:10190 \
   --allow-fallback=false \
   --op put-get \
   --iterations 10000 \
@@ -88,7 +88,7 @@ Server:
 go run -tags rdma ./cmd/inmem-s3-server \
   --tcp-listen 10.0.1.2:10090 \
   --enable-rdma \
-  --rdma-listen 10.0.1.2:19090 \
+  --rdma-listen 10.0.1.2:10190 \
   --store-max-bytes 1073741824 \
   --store-evict-policy reject
 ```
@@ -98,7 +98,7 @@ Client (example):
 ```bash
 go run -tags rdma ./cmd/bench-client \
   --mode rdma \
-  --endpoint http://10.0.1.2:19090 \
+  --endpoint http://10.0.1.2:10190 \
   --allow-fallback=false \
   --op put \
   --iterations 500000 \
@@ -116,7 +116,7 @@ Server:
 go run -tags rdma ./cmd/inmem-s3-server \
   --tcp-listen 10.0.1.2:10090 \
   --enable-rdma \
-  --rdma-listen 10.0.1.2:19090 \
+  --rdma-listen 10.0.1.2:10190 \
   --store-max-bytes 1073741824 \
   --store-evict-policy fifo
 ```
@@ -126,7 +126,7 @@ Client (example):
 ```bash
 go run -tags rdma ./cmd/bench-client \
   --mode rdma \
-  --endpoint http://10.0.1.2:19090 \
+  --endpoint http://10.0.1.2:10190 \
   --allow-fallback=false \
   --op put-get \
   --iterations 500000 \
