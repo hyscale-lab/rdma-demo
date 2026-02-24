@@ -55,6 +55,12 @@ type serverConfig struct {
 	rdmaListen       string
 	rdmaBacklog      int
 	rdmaWorkers      int
+	rdmaLowCPU       bool
+	rdmaFramePayload int
+	rdmaSendDepth    int
+	rdmaRecvDepth    int
+	rdmaInline       int
+	rdmaSignalIntvl  int
 	region           string
 	maxObjectSize    int64
 	storeMaxBytes    int64
@@ -74,6 +80,12 @@ func main() {
 	flag.StringVar(&cfg.rdmaListen, "rdma-listen", "127.0.0.1:10190", "RDMA listen address")
 	flag.IntVar(&cfg.rdmaBacklog, "rdma-backlog", awsrdmahttp.DefaultVerbsListenBacklog, "RDMA listen backlog")
 	flag.IntVar(&cfg.rdmaWorkers, "rdma-accept-workers", awsrdmahttp.DefaultVerbsAcceptWorkers, "RDMA accept worker count")
+	flag.BoolVar(&cfg.rdmaLowCPU, "rdma-lowcpu", false, "use RDMA low-cpu mode")
+	flag.IntVar(&cfg.rdmaFramePayload, "rdma-frame-payload", 0, "RDMA frame payload size in bytes (0=default)")
+	flag.IntVar(&cfg.rdmaSendDepth, "rdma-send-depth", 0, "RDMA send queue depth (0=default)")
+	flag.IntVar(&cfg.rdmaRecvDepth, "rdma-recv-depth", 0, "RDMA recv queue depth (0=default)")
+	flag.IntVar(&cfg.rdmaInline, "rdma-inline-threshold", 0, "RDMA inline threshold in bytes (0=default)")
+	flag.IntVar(&cfg.rdmaSignalIntvl, "rdma-send-signal-interval", 0, "RDMA send signal interval (0=default)")
 	flag.StringVar(&cfg.region, "region", "us-east-1", "region returned by server")
 	flag.Int64Var(&cfg.maxObjectSize, "max-object-size", 64<<20, "max object size in bytes, <=0 means unlimited")
 	flag.Int64Var(&cfg.storeMaxBytes, "store-max-bytes", 0, "max total in-memory bytes for stored objects, <=0 means unlimited")
@@ -118,7 +130,14 @@ func main() {
 
 	if cfg.enableRDMA {
 		ln, err := awsrdmahttp.NewVerbsListener("rdma", cfg.rdmaListen, awsrdmahttp.VerbsListenerOptions{
-			VerbsOptions:  awsrdmahttp.VerbsOptions{},
+			VerbsOptions: awsrdmahttp.VerbsOptions{
+				FramePayloadSize:   cfg.rdmaFramePayload,
+				SendQueueDepth:     cfg.rdmaSendDepth,
+				RecvQueueDepth:     cfg.rdmaRecvDepth,
+				InlineThreshold:    cfg.rdmaInline,
+				LowCPU:             cfg.rdmaLowCPU,
+				SendSignalInterval: cfg.rdmaSignalIntvl,
+			},
 			Backlog:       cfg.rdmaBacklog,
 			AcceptWorkers: cfg.rdmaWorkers,
 		})

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -34,6 +35,8 @@ type benchConfig struct {
 	keyPrefix        string
 	iterations       int
 	concurrency      int
+	targetRPS        float64
+	duration         time.Duration
 	warmup           int
 	objectSize       int
 	requestTimeout   time.Duration
@@ -69,8 +72,11 @@ type benchSummary struct {
 	Endpoint             string        `json:"endpoint"`
 	Region               string        `json:"region"`
 	Bucket               string        `json:"bucket"`
+	BenchmarkModel       string        `json:"benchmark_model"`
 	Iterations           int           `json:"iterations"`
 	Concurrency          int           `json:"concurrency"`
+	TargetRPS            float64       `json:"target_rps,omitempty"`
+	TargetDuration       time.Duration `json:"target_duration,omitempty"`
 	Warmup               int           `json:"warmup"`
 	ObjectSize           int           `json:"object_size"`
 	Elapsed              time.Duration `json:"elapsed"`
@@ -111,7 +117,11 @@ func main() {
 	prefillCount := cfg.prefillCount
 	if cfg.op == "get" {
 		if prefillCount <= 0 {
-			prefillCount = cfg.iterations
+			if isOpenLoopMode(cfg) {
+				prefillCount = int(math.Ceil(cfg.targetRPS * cfg.duration.Seconds()))
+			} else {
+				prefillCount = cfg.iterations
+			}
 		}
 		if err := prefill(client, cfg, payload, prefillCount); err != nil {
 			fatalf("prefill: %v", err)
@@ -144,8 +154,10 @@ func parseFlags() benchConfig {
 	flag.StringVar(&cfg.region, "region", "us-east-1", "S3 region")
 	flag.StringVar(&cfg.bucket, "bucket", "bench-bucket", "bucket name")
 	flag.StringVar(&cfg.keyPrefix, "key-prefix", "bench-object", "object key prefix")
-	flag.IntVar(&cfg.iterations, "iterations", 1000, "number of benchmark iterations")
-	flag.IntVar(&cfg.concurrency, "concurrency", 16, "number of concurrent workers")
+	flag.IntVar(&cfg.iterations, "iterations", 1000, "number of benchmark iterations (closed-loop mode)")
+	flag.IntVar(&cfg.concurrency, "concurrency", 16, "number of concurrent workers (closed-loop mode)")
+	flag.Float64Var(&cfg.targetRPS, "target-rps", 0, "target requests per second for open-loop mode (>0 enables)")
+	flag.DurationVar(&cfg.duration, "duration", 0, "benchmark duration for open-loop mode (for example: 30s)")
 	flag.IntVar(&cfg.warmup, "warmup", 100, "warmup operations before measuring")
 	flag.IntVar(&cfg.objectSize, "object-size", 4096, "object size in bytes")
 	flag.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request timeout")
@@ -154,7 +166,7 @@ func parseFlags() benchConfig {
 	flag.StringVar(&cfg.secretKey, "secret-key", "test", "secret key")
 	flag.BoolVar(&cfg.verbose, "verbose", false, "enable verbose logs")
 	flag.StringVar(&cfg.jsonPath, "json", "", "write summary json to path")
-	flag.IntVar(&cfg.prefillCount, "prefill", 0, "prefill count for get mode (default=iterations)")
+	flag.IntVar(&cfg.prefillCount, "prefill", 0, "prefill count for get mode (default=iterations or ceil(target-rps*duration) in open-loop mode)")
 
 	flag.BoolVar(&cfg.rdmaLowCPU, "rdma-lowcpu", false, "use RDMA low-cpu mode")
 	flag.IntVar(&cfg.rdmaFramePayload, "rdma-frame-payload", 0, "RDMA frame payload size (0=default)")
@@ -181,11 +193,23 @@ func validateConfig(cfg benchConfig) error {
 	default:
 		return fmt.Errorf("op must be put, get, or put-get")
 	}
-	if cfg.iterations <= 0 {
-		return fmt.Errorf("iterations must be > 0")
+	if cfg.targetRPS < 0 {
+		return fmt.Errorf("target-rps must be >= 0")
 	}
-	if cfg.concurrency <= 0 {
-		return fmt.Errorf("concurrency must be > 0")
+	if cfg.duration < 0 {
+		return fmt.Errorf("duration must be >= 0")
+	}
+	switch {
+	case cfg.targetRPS == 0 && cfg.duration == 0:
+		if cfg.iterations <= 0 {
+			return fmt.Errorf("iterations must be > 0")
+		}
+		if cfg.concurrency <= 0 {
+			return fmt.Errorf("concurrency must be > 0")
+		}
+	case cfg.targetRPS > 0 && cfg.duration > 0:
+	default:
+		return fmt.Errorf("target-rps and duration must be set together")
 	}
 	if cfg.objectSize < 0 {
 		return fmt.Errorf("object-size must be >= 0")
@@ -200,6 +224,10 @@ func validateConfig(cfg benchConfig) error {
 		return fmt.Errorf("key-prefix must not be empty")
 	}
 	return nil
+}
+
+func isOpenLoopMode(cfg benchConfig) bool {
+	return cfg.targetRPS > 0 && cfg.duration > 0
 }
 
 func normalizeEndpoint(in string) string {
@@ -301,6 +329,13 @@ func runWarmup(client *s3.Client, cfg benchConfig, payload []byte, prefillCount 
 }
 
 func runBenchmark(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+	if isOpenLoopMode(cfg) {
+		return runBenchmarkOpenLoop(client, cfg, payload, prefillCount, stats)
+	}
+	return runBenchmarkClosedLoop(client, cfg, payload, prefillCount, stats)
+}
+
+func runBenchmarkClosedLoop(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
 	jobs := make(chan int)
 	results := make(chan opResult, cfg.iterations)
 
@@ -353,28 +388,112 @@ func runBenchmark(client *s3.Client, cfg benchConfig, payload []byte, prefillCou
 
 	wg.Wait()
 
-	summary := summarize(cfg, durations, failed, elapsed)
+	summary := summarize(cfg, durations, failed, elapsed, cfg.iterations)
 	summary.FallbackDialAttempts = stats.fallbackDials.Load()
 	summary.Errors = errs
 	return summary
 }
 
-func summarize(cfg benchConfig, durations []time.Duration, failed int, elapsed time.Duration) benchSummary {
+func runBenchmarkOpenLoop(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+	interval := time.Duration(float64(time.Second) / cfg.targetRPS)
+	if interval < time.Nanosecond {
+		interval = time.Nanosecond
+	}
+
+	results := make(chan opResult, 4096)
+	durations := make([]time.Duration, 0, 1024)
+	errs := make([]string, 0, 8)
+	failed := 0
+
+	var collectWG sync.WaitGroup
+	collectWG.Add(1)
+	go func() {
+		defer collectWG.Done()
+		for r := range results {
+			if r.err != nil {
+				failed++
+				if len(errs) < cap(errs) {
+					errs = append(errs, r.err.Error())
+				}
+				continue
+			}
+			durations = append(durations, r.latency)
+		}
+	}()
+
+	var runWG sync.WaitGroup
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	timer := time.NewTimer(cfg.duration)
+	defer timer.Stop()
+
+	start := time.Now()
+	launched := 0
+	scheduling := true
+	for scheduling {
+		select {
+		case <-timer.C:
+			scheduling = false
+		case <-ticker.C:
+			i := launched
+			launched++
+			runWG.Add(1)
+			go func(jobIndex int) {
+				defer runWG.Done()
+				keyIdx := jobIndex
+				if cfg.op == "get" && prefillCount > 0 {
+					keyIdx = jobIndex % prefillCount
+				}
+				key := objectKey(cfg.keyPrefix, keyIdx)
+				opStart := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), cfg.requestTimeout)
+				err := runOperation(ctx, client, cfg, payload, key)
+				cancel()
+				results <- opResult{
+					latency: time.Since(opStart),
+					err:     err,
+				}
+			}(i)
+		}
+	}
+
+	runWG.Wait()
+	close(results)
+	collectWG.Wait()
+
+	elapsed := time.Since(start)
+	summary := summarize(cfg, durations, failed, elapsed, launched)
+	summary.FallbackDialAttempts = stats.fallbackDials.Load()
+	summary.Errors = errs
+	return summary
+}
+
+func summarize(cfg benchConfig, durations []time.Duration, failed int, elapsed time.Duration, iterations int) benchSummary {
 	success := len(durations)
+	benchmarkModel := "closed-loop"
+	concurrency := cfg.concurrency
+	if isOpenLoopMode(cfg) {
+		benchmarkModel = "open-loop"
+		concurrency = 0
+	}
+
 	summary := benchSummary{
-		Timestamp:   time.Now().Format(time.RFC3339),
-		Mode:        cfg.mode,
-		Operation:   cfg.op,
-		Endpoint:    cfg.endpoint,
-		Region:      cfg.region,
-		Bucket:      cfg.bucket,
-		Iterations:  cfg.iterations,
-		Concurrency: cfg.concurrency,
-		Warmup:      cfg.warmup,
-		ObjectSize:  cfg.objectSize,
-		Elapsed:     elapsed,
-		Success:     success,
-		Failed:      failed,
+		Timestamp:      time.Now().Format(time.RFC3339),
+		Mode:           cfg.mode,
+		Operation:      cfg.op,
+		Endpoint:       cfg.endpoint,
+		Region:         cfg.region,
+		Bucket:         cfg.bucket,
+		BenchmarkModel: benchmarkModel,
+		Iterations:     iterations,
+		Concurrency:    concurrency,
+		TargetRPS:      cfg.targetRPS,
+		TargetDuration: cfg.duration,
+		Warmup:         cfg.warmup,
+		ObjectSize:     cfg.objectSize,
+		Elapsed:        elapsed,
+		Success:        success,
+		Failed:         failed,
 	}
 	if success == 0 {
 		return summary
@@ -469,8 +588,14 @@ func makePayload(n int) []byte {
 }
 
 func printSummary(s benchSummary) {
-	fmt.Printf("mode=%s op=%s endpoint=%s\n", s.Mode, s.Operation, s.Endpoint)
-	fmt.Printf("iterations=%d concurrency=%d warmup=%d object_size=%d\n", s.Iterations, s.Concurrency, s.Warmup, s.ObjectSize)
+	fmt.Printf("mode=%s op=%s endpoint=%s model=%s\n", s.Mode, s.Operation, s.Endpoint, s.BenchmarkModel)
+	if s.BenchmarkModel == "open-loop" {
+		fmt.Printf("launched=%d target_rps=%.2f target_duration=%s warmup=%d object_size=%d\n",
+			s.Iterations, s.TargetRPS, s.TargetDuration, s.Warmup, s.ObjectSize)
+	} else {
+		fmt.Printf("iterations=%d concurrency=%d warmup=%d object_size=%d\n",
+			s.Iterations, s.Concurrency, s.Warmup, s.ObjectSize)
+	}
 	fmt.Printf("success=%d failed=%d elapsed=%s\n", s.Success, s.Failed, s.Elapsed)
 	fmt.Printf("throughput: %.2f req/s, %.2f MiB/s\n", s.ThroughputReqPerSec, s.ThroughputMBPerSec)
 	fmt.Printf("latency: avg=%s p50=%s p95=%s p99=%s min=%s max=%s\n",
