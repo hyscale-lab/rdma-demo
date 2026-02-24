@@ -10,6 +10,11 @@ RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/results/size-sweep-$RUN_ID}"
 
 SIZES=(
+  "1kB:1024"
+  "4kB:4096"
+  "16kB:16384"
+  "64kB:65536"
+  "256kB:262144"
   "1MB:1048576"
   "4MB:4194304"
   "16MB:16777216"

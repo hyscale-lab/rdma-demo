@@ -42,3 +42,9 @@ go run -tags rdma ./cmd/inmem-s3-server \
   --rdma-listen 127.0.0.1:10190
 ```
 
+## Some Script
+Can simply use `run_cross_host_*.sh`
+
+- `RDMA_FRAME_PAYLOAD`: change the rdma frame size
+- `RDMA_SEND_DEPTH`, `RDMA_RECV_DEPTH`: change the Queue Depth, increase this setting when the payload is large.
+- `STORE_MAX_BYTES`: Server storage resident memory size
