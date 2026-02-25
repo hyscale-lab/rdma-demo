@@ -25,6 +25,7 @@ RDMA_LOWCPU="${RDMA_LOWCPU:-false}"
 MODES="${MODES:-both}"
 PERF_EVENTS="${PERF_EVENTS:-cycles:u,cycles:k,instructions,task-clock,context-switches,cpu-migrations,cache-misses}"
 WARMUP="${WARMUP:-100}"
+REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-5s}"
 
 if [ "$TARGET_RPS" != "0" ] && [ "$TARGET_RPS" != "0.0" ] && [ "$DURATION" = "0s" ]; then
   echo "DURATION must be set when TARGET_RPS is enabled (example: DURATION=60s)" >&2
@@ -58,6 +59,7 @@ run_case() {
     --object-size "$OBJECT_SIZE"
     --bucket "$BUCKET"
     --warmup "$WARMUP"
+    --request-timeout "$REQUEST_TIMEOUT"
     "$@"
   )
 
@@ -70,9 +72,9 @@ run_case() {
   echo
   echo "===== $mode ====="
   if [ "$TARGET_RPS" != "0" ] && [ "$TARGET_RPS" != "0.0" ]; then
-    echo "endpoint=$endpoint target_rps=$TARGET_RPS duration=$DURATION object_size=$OBJECT_SIZE op=$OP"
+    echo "endpoint=$endpoint target_rps=$TARGET_RPS duration=$DURATION object_size=$OBJECT_SIZE op=$OP request_timeout=$REQUEST_TIMEOUT"
   else
-    echo "endpoint=$endpoint iterations=$ITERATIONS concurrency=$CONCURRENCY object_size=$OBJECT_SIZE op=$OP"
+    echo "endpoint=$endpoint iterations=$ITERATIONS concurrency=$CONCURRENCY object_size=$OBJECT_SIZE op=$OP request_timeout=$REQUEST_TIMEOUT"
   fi
 
   if command -v perf >/dev/null 2>&1; then
