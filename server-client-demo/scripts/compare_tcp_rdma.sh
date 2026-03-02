@@ -26,6 +26,16 @@ MODES="${MODES:-both}"
 PERF_EVENTS="${PERF_EVENTS:-cycles:u,cycles:k,instructions,task-clock,context-switches,cpu-migrations,cache-misses}"
 WARMUP="${WARMUP:-100}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-5s}"
+S3_CLIENT_COUNT="${S3_CLIENT_COUNT:-1}"
+OPEN_LOOP_CLIENT_FANOUT="${OPEN_LOOP_CLIENT_FANOUT:-false}"
+RDMA_MAX_CONNS_PER_HOST="${RDMA_MAX_CONNS_PER_HOST:-0}"
+RDMA_SHARED_HTTP_POOL="${RDMA_SHARED_HTTP_POOL:-false}"
+RDMA_SHARED_HTTP_POOL_KEY="${RDMA_SHARED_HTTP_POOL_KEY:-}"
+RDMA_ENDPOINT_POOL_SIZE="${RDMA_ENDPOINT_POOL_SIZE:-0}"
+RDMA_ENDPOINT_POOL_WARMUP="${RDMA_ENDPOINT_POOL_WARMUP:-false}"
+RDMA_SHARED_MEMORY_BUDGET_BYTES="${RDMA_SHARED_MEMORY_BUDGET_BYTES:-0}"
+RDMA_ENDPOINT_MULTIPLEX="${RDMA_ENDPOINT_MULTIPLEX:-false}"
+RDMA_ENDPOINT_SEND_QUEUE_DEPTH="${RDMA_ENDPOINT_SEND_QUEUE_DEPTH:-0}"
 
 if [ "$TARGET_RPS" != "0" ] && [ "$TARGET_RPS" != "0.0" ] && [ "$DURATION" = "0s" ]; then
   echo "DURATION must be set when TARGET_RPS is enabled (example: DURATION=60s)" >&2
@@ -60,6 +70,8 @@ run_case() {
     --bucket "$BUCKET"
     --warmup "$WARMUP"
     --request-timeout "$REQUEST_TIMEOUT"
+    --s3-client-count "$S3_CLIENT_COUNT"
+    --open-loop-client-fanout="$OPEN_LOOP_CLIENT_FANOUT"
     "$@"
   )
 
@@ -72,9 +84,9 @@ run_case() {
   echo
   echo "===== $mode ====="
   if [ "$TARGET_RPS" != "0" ] && [ "$TARGET_RPS" != "0.0" ]; then
-    echo "endpoint=$endpoint target_rps=$TARGET_RPS duration=$DURATION object_size=$OBJECT_SIZE op=$OP request_timeout=$REQUEST_TIMEOUT"
+    echo "endpoint=$endpoint target_rps=$TARGET_RPS duration=$DURATION object_size=$OBJECT_SIZE op=$OP request_timeout=$REQUEST_TIMEOUT client_count=$S3_CLIENT_COUNT open_loop_client_fanout=$OPEN_LOOP_CLIENT_FANOUT"
   else
-    echo "endpoint=$endpoint iterations=$ITERATIONS concurrency=$CONCURRENCY object_size=$OBJECT_SIZE op=$OP request_timeout=$REQUEST_TIMEOUT"
+    echo "endpoint=$endpoint iterations=$ITERATIONS concurrency=$CONCURRENCY object_size=$OBJECT_SIZE op=$OP request_timeout=$REQUEST_TIMEOUT client_count=$S3_CLIENT_COUNT"
   fi
 
   if command -v perf >/dev/null 2>&1; then
@@ -95,12 +107,26 @@ if [ "$MODES" = "both" ] || [ "$MODES" = "tcp" ]; then
   run_case tcp "$TCP_ENDPOINT"
 fi
 if [ "$MODES" = "both" ] || [ "$MODES" = "rdma" ]; then
-  run_case rdma "$RDMA_ENDPOINT" \
-    --allow-fallback="$RDMA_ALLOW_FALLBACK" \
-    --rdma-frame-payload "$RDMA_FRAME_PAYLOAD" \
-    --rdma-send-depth "$RDMA_SEND_DEPTH" \
-    --rdma-recv-depth "$RDMA_RECV_DEPTH" \
-    --rdma-inline-threshold "$RDMA_INLINE_THRESHOLD" \
-    --rdma-send-signal-interval "$RDMA_SEND_SIGNAL_INTERVAL" \
+  rdma_extra_args=(
+    --allow-fallback="$RDMA_ALLOW_FALLBACK"
+    --rdma-frame-payload "$RDMA_FRAME_PAYLOAD"
+    --rdma-send-depth "$RDMA_SEND_DEPTH"
+    --rdma-recv-depth "$RDMA_RECV_DEPTH"
+    --rdma-inline-threshold "$RDMA_INLINE_THRESHOLD"
+    --rdma-send-signal-interval "$RDMA_SEND_SIGNAL_INTERVAL"
     --rdma-lowcpu="$RDMA_LOWCPU"
+    --rdma-max-conns-per-host "$RDMA_MAX_CONNS_PER_HOST"
+    --rdma-shared-http-pool="$RDMA_SHARED_HTTP_POOL"
+    --rdma-endpoint-pool-size "$RDMA_ENDPOINT_POOL_SIZE"
+    --rdma-endpoint-pool-warmup="$RDMA_ENDPOINT_POOL_WARMUP"
+    --rdma-shared-memory-budget-bytes "$RDMA_SHARED_MEMORY_BUDGET_BYTES"
+    --rdma-endpoint-multiplex="$RDMA_ENDPOINT_MULTIPLEX"
+    --rdma-endpoint-send-queue-depth "$RDMA_ENDPOINT_SEND_QUEUE_DEPTH"
+  )
+
+  if [ -n "$RDMA_SHARED_HTTP_POOL_KEY" ]; then
+    rdma_extra_args+=(--rdma-shared-http-pool-key "$RDMA_SHARED_HTTP_POOL_KEY")
+  fi
+
+  run_case rdma "$RDMA_ENDPOINT" "${rdma_extra_args[@]}"
 fi

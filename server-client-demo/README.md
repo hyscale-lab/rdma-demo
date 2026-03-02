@@ -48,3 +48,9 @@ Can simply use `run_cross_host_*.sh`
 - `RDMA_FRAME_PAYLOAD`: change the rdma frame size
 - `RDMA_SEND_DEPTH`, `RDMA_RECV_DEPTH`: change the Queue Depth, increase this setting when the payload is large.
 - `STORE_MAX_BYTES`: Server storage resident memory size
+
+for example
+
+```
+ MODES=both PREPARE_REMOTE_SERVER=true RESTART_REMOTE_BETWEEN_MODES=false S3_CLIENT_COUNT=140 OPEN_LOOP_CLIENT_FANOUT=true TARGET_RPS=3000 DURATION=20s OBJECT_SIZE=262144 WARMUP=280 REQUEST_TIMEOUT=5s RDMA_SHARED_HTTP_POOL=false RDMA_MAX_CONNS_PER_HOST=0 RDMA_ENDPOINT_POOL_SIZE=0 RDMA_ENDPOINT_MULTIPLEX=false RDMA_MULTIPLEX=false /users/Liquidz/rdma-demo/server-client-demo/scripts/compare_cross_host.sh
+```
