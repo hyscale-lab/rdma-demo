@@ -54,6 +54,16 @@ type benchConfig struct {
 	rdmaSignalIntvl  int
 	rdmaOpenParallel int
 	rdmaOpenMinIntvl time.Duration
+	rdmaMaxConns     int
+	rdmaSharePool    bool
+	rdmaSharePoolKey string
+	rdmaEndpointPool int
+	rdmaEndpointWarm bool
+	rdmaSharedMemBgt int
+	rdmaEndpointMux  bool
+	rdmaEndpointSend int
+	s3ClientCount    int
+	openLoopFanout   bool
 }
 
 type dialStats struct {
@@ -73,8 +83,10 @@ type benchSummary struct {
 	Region               string        `json:"region"`
 	Bucket               string        `json:"bucket"`
 	BenchmarkModel       string        `json:"benchmark_model"`
+	OpenLoopDispatch     string        `json:"open_loop_dispatch,omitempty"`
 	Iterations           int           `json:"iterations"`
 	Concurrency          int           `json:"concurrency"`
+	ClientCount          int           `json:"client_count"`
 	TargetRPS            float64       `json:"target_rps,omitempty"`
 	TargetDuration       time.Duration `json:"target_duration,omitempty"`
 	Warmup               int           `json:"warmup"`
@@ -101,10 +113,11 @@ func main() {
 	}
 
 	var stats dialStats
-	client, err := newS3Client(cfg, &stats)
+	clients, err := newS3Clients(cfg, &stats)
 	if err != nil {
-		fatalf("create s3 client: %v", err)
+		fatalf("create s3 clients: %v", err)
 	}
+	client := clients[0]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := ensureBucket(ctx, client, cfg.bucket); err != nil {
@@ -132,12 +145,12 @@ func main() {
 		if cfg.verbose {
 			fmt.Printf("running warmup: %d ops\n", cfg.warmup)
 		}
-		if err := runWarmup(client, cfg, payload, prefillCount); err != nil {
+		if err := runWarmup(clients, cfg, payload, prefillCount); err != nil {
 			fatalf("warmup failed: %v", err)
 		}
 	}
 
-	summary := runBenchmark(client, cfg, payload, prefillCount, &stats)
+	summary := runBenchmark(clients, cfg, payload, prefillCount, &stats)
 	printSummary(summary)
 	if cfg.jsonPath != "" {
 		if err := writeSummaryJSON(cfg.jsonPath, summary); err != nil {
@@ -167,6 +180,8 @@ func parseFlags() benchConfig {
 	flag.BoolVar(&cfg.verbose, "verbose", false, "enable verbose logs")
 	flag.StringVar(&cfg.jsonPath, "json", "", "write summary json to path")
 	flag.IntVar(&cfg.prefillCount, "prefill", 0, "prefill count for get mode (default=iterations or ceil(target-rps*duration) in open-loop mode)")
+	flag.IntVar(&cfg.s3ClientCount, "s3-client-count", 1, "number of S3 client instances to create in-process")
+	flag.BoolVar(&cfg.openLoopFanout, "open-loop-client-fanout", false, "in open-loop mode, dispatch requests from per-client schedulers instead of a single global scheduler")
 
 	flag.BoolVar(&cfg.rdmaLowCPU, "rdma-lowcpu", false, "use RDMA low-cpu mode")
 	flag.IntVar(&cfg.rdmaFramePayload, "rdma-frame-payload", 0, "RDMA frame payload size (0=default)")
@@ -176,6 +191,14 @@ func parseFlags() benchConfig {
 	flag.IntVar(&cfg.rdmaSignalIntvl, "rdma-send-signal-interval", 0, "RDMA send signal interval (0=default)")
 	flag.IntVar(&cfg.rdmaOpenParallel, "rdma-open-parallelism", awsrdmahttp.DefaultOpenParallelism, "RDMA open parallelism")
 	flag.DurationVar(&cfg.rdmaOpenMinIntvl, "rdma-open-min-interval", awsrdmahttp.DefaultOpenMinInterval, "RDMA minimum interval between open attempts")
+	flag.IntVar(&cfg.rdmaMaxConns, "rdma-max-conns-per-host", 0, "RDMA max connections per host (<=0 uses adaptive default)")
+	flag.BoolVar(&cfg.rdmaSharePool, "rdma-shared-http-pool", false, "enable shared HTTP connection pool")
+	flag.StringVar(&cfg.rdmaSharePoolKey, "rdma-shared-http-pool-key", "", "shared HTTP connection pool key (empty uses SDK default key)")
+	flag.IntVar(&cfg.rdmaEndpointPool, "rdma-endpoint-pool-size", 0, "RDMA endpoint engine physical connection pool size (<=0 disables)")
+	flag.BoolVar(&cfg.rdmaEndpointWarm, "rdma-endpoint-pool-warmup", false, "warm up RDMA endpoint connection pool in background")
+	flag.IntVar(&cfg.rdmaSharedMemBgt, "rdma-shared-memory-budget-bytes", 0, "RDMA shared memory budget bytes for endpoint pool accounting (<=0 disables)")
+	flag.BoolVar(&cfg.rdmaEndpointMux, "rdma-endpoint-multiplex", false, "enable logical stream multiplexing over RDMA endpoint pool")
+	flag.IntVar(&cfg.rdmaEndpointSend, "rdma-endpoint-send-queue-depth", 0, "RDMA multiplexed endpoint send queue depth per physical connection (0=default)")
 	flag.Parse()
 
 	cfg.mode = strings.ToLower(strings.TrimSpace(cfg.mode))
@@ -223,6 +246,9 @@ func validateConfig(cfg benchConfig) error {
 	if cfg.keyPrefix == "" {
 		return fmt.Errorf("key-prefix must not be empty")
 	}
+	if cfg.s3ClientCount <= 0 {
+		return fmt.Errorf("s3-client-count must be > 0")
+	}
 	return nil
 }
 
@@ -236,6 +262,18 @@ func normalizeEndpoint(in string) string {
 		return v
 	}
 	return "http://" + v
+}
+
+func newS3Clients(cfg benchConfig, stats *dialStats) ([]*s3.Client, error) {
+	clients := make([]*s3.Client, 0, cfg.s3ClientCount)
+	for i := 0; i < cfg.s3ClientCount; i++ {
+		client, err := newS3Client(cfg, stats)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, client)
+	}
+	return clients, nil
 }
 
 func newS3Client(cfg benchConfig, stats *dialStats) (*s3.Client, error) {
@@ -253,12 +291,17 @@ func newS3Client(cfg benchConfig, stats *dialStats) (*s3.Client, error) {
 
 	if cfg.mode == "rdma" {
 		dialer := awsrdmahttp.NewVerbsDialer(awsrdmahttp.VerbsOptions{
-			FramePayloadSize:   cfg.rdmaFramePayload,
-			SendQueueDepth:     cfg.rdmaSendDepth,
-			RecvQueueDepth:     cfg.rdmaRecvDepth,
-			InlineThreshold:    cfg.rdmaInline,
-			LowCPU:             cfg.rdmaLowCPU,
-			SendSignalInterval: cfg.rdmaSignalIntvl,
+			FramePayloadSize:        cfg.rdmaFramePayload,
+			SendQueueDepth:          cfg.rdmaSendDepth,
+			RecvQueueDepth:          cfg.rdmaRecvDepth,
+			InlineThreshold:         cfg.rdmaInline,
+			LowCPU:                  cfg.rdmaLowCPU,
+			SendSignalInterval:      cfg.rdmaSignalIntvl,
+			EndpointPoolSize:        cfg.rdmaEndpointPool,
+			EndpointPoolWarmup:      cfg.rdmaEndpointWarm,
+			SharedMemoryBudgetBytes: cfg.rdmaSharedMemBgt,
+			EndpointEnableMultiplex: cfg.rdmaEndpointMux,
+			EndpointSendQueueDepth:  cfg.rdmaEndpointSend,
 		})
 		dialer.DisableFallback = !cfg.allowFallback
 		dialer.OpenParallelism = cfg.rdmaOpenParallel
@@ -269,9 +312,16 @@ func newS3Client(cfg benchConfig, stats *dialStats) (*s3.Client, error) {
 		}
 		opts.EnableRDMATransport = true
 		opts.RDMADialer = dialer
+		opts.RDMAMaxConnsPerHost = cfg.rdmaMaxConns
+		opts.EnableSharedHTTPConnectionPool = cfg.rdmaSharePool
+		opts.SharedHTTPConnectionPoolKey = cfg.rdmaSharePoolKey
 	}
 
 	return s3.New(opts), nil
+}
+
+func selectClient(clients []*s3.Client, idx int) *s3.Client {
+	return clients[idx%len(clients)]
 }
 
 func ensureBucket(ctx context.Context, client *s3.Client, bucket string) error {
@@ -311,13 +361,14 @@ func prefill(client *s3.Client, cfg benchConfig, payload []byte, count int) erro
 	return nil
 }
 
-func runWarmup(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int) error {
+func runWarmup(clients []*s3.Client, cfg benchConfig, payload []byte, prefillCount int) error {
 	for i := 0; i < cfg.warmup; i++ {
 		keyIdx := i
 		if cfg.op == "get" && prefillCount > 0 {
 			keyIdx = i % prefillCount
 		}
 		key := objectKey(cfg.keyPrefix, keyIdx)
+		client := selectClient(clients, i)
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.requestTimeout)
 		err := runOperation(ctx, client, cfg, payload, key)
 		cancel()
@@ -328,14 +379,14 @@ func runWarmup(client *s3.Client, cfg benchConfig, payload []byte, prefillCount 
 	return nil
 }
 
-func runBenchmark(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+func runBenchmark(clients []*s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
 	if isOpenLoopMode(cfg) {
-		return runBenchmarkOpenLoop(client, cfg, payload, prefillCount, stats)
+		return runBenchmarkOpenLoop(clients, cfg, payload, prefillCount, stats)
 	}
-	return runBenchmarkClosedLoop(client, cfg, payload, prefillCount, stats)
+	return runBenchmarkClosedLoop(clients, cfg, payload, prefillCount, stats)
 }
 
-func runBenchmarkClosedLoop(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+func runBenchmarkClosedLoop(clients []*s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
 	jobs := make(chan int)
 	results := make(chan opResult, cfg.iterations)
 
@@ -350,6 +401,7 @@ func runBenchmarkClosedLoop(client *s3.Client, cfg benchConfig, payload []byte, 
 					keyIdx = i % prefillCount
 				}
 				key := objectKey(cfg.keyPrefix, keyIdx)
+				client := selectClient(clients, i)
 				start := time.Now()
 				ctx, cancel := context.WithTimeout(context.Background(), cfg.requestTimeout)
 				err := runOperation(ctx, client, cfg, payload, key)
@@ -394,11 +446,23 @@ func runBenchmarkClosedLoop(client *s3.Client, cfg benchConfig, payload []byte, 
 	return summary
 }
 
-func runBenchmarkOpenLoop(client *s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
-	interval := time.Duration(float64(time.Second) / cfg.targetRPS)
-	if interval < time.Nanosecond {
-		interval = time.Nanosecond
+func runBenchmarkOpenLoop(clients []*s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+	if cfg.openLoopFanout && len(clients) > 1 && cfg.targetRPS >= float64(len(clients)) {
+		return runBenchmarkOpenLoopPerClient(clients, cfg, payload, prefillCount, stats)
 	}
+	return runBenchmarkOpenLoopGlobal(clients, cfg, payload, prefillCount, stats)
+}
+
+func openLoopInterval(targetRPS float64) time.Duration {
+	interval := time.Duration(float64(time.Second) / targetRPS)
+	if interval < time.Nanosecond {
+		return time.Nanosecond
+	}
+	return interval
+}
+
+func runBenchmarkOpenLoopGlobal(clients []*s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+	interval := openLoopInterval(cfg.targetRPS)
 
 	results := make(chan opResult, 4096)
 	durations := make([]time.Duration, 0, 1024)
@@ -445,6 +509,7 @@ func runBenchmarkOpenLoop(client *s3.Client, cfg benchConfig, payload []byte, pr
 					keyIdx = jobIndex % prefillCount
 				}
 				key := objectKey(cfg.keyPrefix, keyIdx)
+				client := selectClient(clients, jobIndex)
 				opStart := time.Now()
 				ctx, cancel := context.WithTimeout(context.Background(), cfg.requestTimeout)
 				err := runOperation(ctx, client, cfg, payload, key)
@@ -463,6 +528,90 @@ func runBenchmarkOpenLoop(client *s3.Client, cfg benchConfig, payload []byte, pr
 
 	elapsed := time.Since(start)
 	summary := summarize(cfg, durations, failed, elapsed, launched)
+	summary.FallbackDialAttempts = stats.fallbackDials.Load()
+	summary.Errors = errs
+	return summary
+}
+
+func runBenchmarkOpenLoopPerClient(clients []*s3.Client, cfg benchConfig, payload []byte, prefillCount int, stats *dialStats) benchSummary {
+	perClientRPS := cfg.targetRPS / float64(len(clients))
+	interval := openLoopInterval(perClientRPS)
+
+	results := make(chan opResult, 4096)
+	durations := make([]time.Duration, 0, 1024)
+	errs := make([]string, 0, 8)
+	failed := 0
+
+	var collectWG sync.WaitGroup
+	collectWG.Add(1)
+	go func() {
+		defer collectWG.Done()
+		for r := range results {
+			if r.err != nil {
+				failed++
+				if len(errs) < cap(errs) {
+					errs = append(errs, r.err.Error())
+				}
+				continue
+			}
+			durations = append(durations, r.latency)
+		}
+	}()
+
+	var schedWG sync.WaitGroup
+	var runWG sync.WaitGroup
+	var launched atomic.Int64
+	var nextJobID atomic.Int64
+	stopCtx, stop := context.WithCancel(context.Background())
+
+	start := time.Now()
+	for idx := range clients {
+		client := clients[idx]
+		schedWG.Add(1)
+		go func(client *s3.Client) {
+			defer schedWG.Done()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-stopCtx.Done():
+					return
+				case <-ticker.C:
+					jobID := int(nextJobID.Add(1) - 1)
+					launched.Add(1)
+					runWG.Add(1)
+					go func(jobIndex int, client *s3.Client) {
+						defer runWG.Done()
+						keyIdx := jobIndex
+						if cfg.op == "get" && prefillCount > 0 {
+							keyIdx = jobIndex % prefillCount
+						}
+						key := objectKey(cfg.keyPrefix, keyIdx)
+						opStart := time.Now()
+						ctx, cancel := context.WithTimeout(context.Background(), cfg.requestTimeout)
+						err := runOperation(ctx, client, cfg, payload, key)
+						cancel()
+						results <- opResult{
+							latency: time.Since(opStart),
+							err:     err,
+						}
+					}(jobID, client)
+				}
+			}
+		}(client)
+	}
+
+	timer := time.NewTimer(cfg.duration)
+	<-timer.C
+	stop()
+	schedWG.Wait()
+	runWG.Wait()
+	close(results)
+	collectWG.Wait()
+
+	elapsed := time.Since(start)
+	summary := summarize(cfg, durations, failed, elapsed, int(launched.Load()))
 	summary.FallbackDialAttempts = stats.fallbackDials.Load()
 	summary.Errors = errs
 	return summary
@@ -487,6 +636,7 @@ func summarize(cfg benchConfig, durations []time.Duration, failed int, elapsed t
 		BenchmarkModel: benchmarkModel,
 		Iterations:     iterations,
 		Concurrency:    concurrency,
+		ClientCount:    cfg.s3ClientCount,
 		TargetRPS:      cfg.targetRPS,
 		TargetDuration: cfg.duration,
 		Warmup:         cfg.warmup,
@@ -494,6 +644,13 @@ func summarize(cfg benchConfig, durations []time.Duration, failed int, elapsed t
 		Elapsed:        elapsed,
 		Success:        success,
 		Failed:         failed,
+	}
+	if isOpenLoopMode(cfg) {
+		if cfg.openLoopFanout {
+			summary.OpenLoopDispatch = "per-client-fanout"
+		} else {
+			summary.OpenLoopDispatch = "single-global"
+		}
 	}
 	if success == 0 {
 		return summary
@@ -590,11 +747,11 @@ func makePayload(n int) []byte {
 func printSummary(s benchSummary) {
 	fmt.Printf("mode=%s op=%s endpoint=%s model=%s\n", s.Mode, s.Operation, s.Endpoint, s.BenchmarkModel)
 	if s.BenchmarkModel == "open-loop" {
-		fmt.Printf("launched=%d target_rps=%.2f target_duration=%s warmup=%d object_size=%d\n",
-			s.Iterations, s.TargetRPS, s.TargetDuration, s.Warmup, s.ObjectSize)
+		fmt.Printf("launched=%d target_rps=%.2f target_duration=%s warmup=%d object_size=%d client_count=%d dispatch=%s\n",
+			s.Iterations, s.TargetRPS, s.TargetDuration, s.Warmup, s.ObjectSize, s.ClientCount, s.OpenLoopDispatch)
 	} else {
-		fmt.Printf("iterations=%d concurrency=%d warmup=%d object_size=%d\n",
-			s.Iterations, s.Concurrency, s.Warmup, s.ObjectSize)
+		fmt.Printf("iterations=%d concurrency=%d warmup=%d object_size=%d client_count=%d\n",
+			s.Iterations, s.Concurrency, s.Warmup, s.ObjectSize, s.ClientCount)
 	}
 	fmt.Printf("success=%d failed=%d elapsed=%s\n", s.Success, s.Failed, s.Elapsed)
 	fmt.Printf("throughput: %.2f req/s, %.2f MiB/s\n", s.ThroughputReqPerSec, s.ThroughputMBPerSec)
