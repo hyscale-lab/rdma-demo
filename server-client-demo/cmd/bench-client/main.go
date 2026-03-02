@@ -264,10 +264,52 @@ func normalizeEndpoint(in string) string {
 	return "http://" + v
 }
 
+func newHTTPClient(maxConnsPerHost int) *awshttp.BuildableClient {
+	return awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.Proxy = nil
+		if maxConnsPerHost > 0 {
+			tr.MaxConnsPerHost = maxConnsPerHost
+			tr.MaxIdleConnsPerHost = maxConnsPerHost
+			if tr.MaxIdleConns < maxConnsPerHost {
+				tr.MaxIdleConns = maxConnsPerHost
+			}
+		}
+	})
+}
+
 func newS3Clients(cfg benchConfig, stats *dialStats) ([]*s3.Client, error) {
 	clients := make([]*s3.Client, 0, cfg.s3ClientCount)
+
+	// In RDMA shared-pool mode, use one concrete S3 client and fan logical
+	// client slots to it. This enforces a single underlying transport pool.
+	if cfg.mode == "rdma" && cfg.rdmaSharePool && cfg.s3ClientCount > 1 {
+		sharedHTTPClient := newHTTPClient(cfg.rdmaMaxConns)
+		sharedClient, err := newS3Client(cfg, stats, sharedHTTPClient)
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < cfg.s3ClientCount; i++ {
+			clients = append(clients, sharedClient)
+		}
+		return clients, nil
+	}
+
+	var sharedHTTPClient *awshttp.BuildableClient
+	if cfg.mode == "rdma" && cfg.rdmaSharePool {
+		sharedHTTPClient = newHTTPClient(cfg.rdmaMaxConns)
+	}
+
 	for i := 0; i < cfg.s3ClientCount; i++ {
-		client, err := newS3Client(cfg, stats)
+		httpClient := sharedHTTPClient
+		if httpClient == nil {
+			maxConns := 0
+			if cfg.mode == "rdma" {
+				maxConns = cfg.rdmaMaxConns
+			}
+			httpClient = newHTTPClient(maxConns)
+		}
+
+		client, err := newS3Client(cfg, stats, httpClient)
 		if err != nil {
 			return nil, err
 		}
@@ -276,11 +318,7 @@ func newS3Clients(cfg benchConfig, stats *dialStats) ([]*s3.Client, error) {
 	return clients, nil
 }
 
-func newS3Client(cfg benchConfig, stats *dialStats) (*s3.Client, error) {
-	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
-		tr.Proxy = nil
-	})
-
+func newS3Client(cfg benchConfig, stats *dialStats, httpClient aws.HTTPClient) (*s3.Client, error) {
 	opts := s3.Options{
 		Region:       cfg.region,
 		BaseEndpoint: aws.String(cfg.endpoint),
@@ -291,17 +329,12 @@ func newS3Client(cfg benchConfig, stats *dialStats) (*s3.Client, error) {
 
 	if cfg.mode == "rdma" {
 		dialer := awsrdmahttp.NewVerbsDialer(awsrdmahttp.VerbsOptions{
-			FramePayloadSize:        cfg.rdmaFramePayload,
-			SendQueueDepth:          cfg.rdmaSendDepth,
-			RecvQueueDepth:          cfg.rdmaRecvDepth,
-			InlineThreshold:         cfg.rdmaInline,
-			LowCPU:                  cfg.rdmaLowCPU,
-			SendSignalInterval:      cfg.rdmaSignalIntvl,
-			EndpointPoolSize:        cfg.rdmaEndpointPool,
-			EndpointPoolWarmup:      cfg.rdmaEndpointWarm,
-			SharedMemoryBudgetBytes: cfg.rdmaSharedMemBgt,
-			EndpointEnableMultiplex: cfg.rdmaEndpointMux,
-			EndpointSendQueueDepth:  cfg.rdmaEndpointSend,
+			FramePayloadSize:   cfg.rdmaFramePayload,
+			SendQueueDepth:     cfg.rdmaSendDepth,
+			RecvQueueDepth:     cfg.rdmaRecvDepth,
+			InlineThreshold:    cfg.rdmaInline,
+			LowCPU:             cfg.rdmaLowCPU,
+			SendSignalInterval: cfg.rdmaSignalIntvl,
 		})
 		dialer.DisableFallback = !cfg.allowFallback
 		dialer.OpenParallelism = cfg.rdmaOpenParallel
@@ -312,9 +345,6 @@ func newS3Client(cfg benchConfig, stats *dialStats) (*s3.Client, error) {
 		}
 		opts.EnableRDMATransport = true
 		opts.RDMADialer = dialer
-		opts.RDMAMaxConnsPerHost = cfg.rdmaMaxConns
-		opts.EnableSharedHTTPConnectionPool = cfg.rdmaSharePool
-		opts.SharedHTTPConnectionPoolKey = cfg.rdmaSharePoolKey
 	}
 
 	return s3.New(opts), nil
