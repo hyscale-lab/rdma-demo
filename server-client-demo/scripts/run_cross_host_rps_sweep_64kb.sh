@@ -6,6 +6,8 @@ COMPARE_SCRIPT="$ROOT_DIR/scripts/compare_cross_host.sh"
 
 OBJECT_SIZE="${OBJECT_SIZE:-65536}"
 DURATION="${DURATION:-20s}"
+S3_CLIENT_COUNT="${S3_CLIENT_COUNT:-140}"
+OPEN_LOOP_CLIENT_FANOUT="${OPEN_LOOP_CLIENT_FANOUT:-true}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/results/rps-sweep-64kb-$RUN_ID}"
 
@@ -15,6 +17,7 @@ mkdir -p "$RESULT_DIR"
 
 echo "rps sweep started"
 echo "object_size=$OBJECT_SIZE duration=$DURATION"
+echo "s3_client_count=$S3_CLIENT_COUNT open_loop_client_fanout=$OPEN_LOOP_CLIENT_FANOUT"
 echo "result_dir=$RESULT_DIR"
 
 for rps in "${RPS_VALUES[@]}"; do
@@ -26,6 +29,8 @@ for rps in "${RPS_VALUES[@]}"; do
     OBJECT_SIZE="$OBJECT_SIZE" \
     TARGET_RPS="$rps" \
     DURATION="$DURATION" \
+    S3_CLIENT_COUNT="$S3_CLIENT_COUNT" \
+    OPEN_LOOP_CLIENT_FANOUT="$OPEN_LOOP_CLIENT_FANOUT" \
     "$COMPARE_SCRIPT"
   ) 2>&1 | tee "$log_file"
 done

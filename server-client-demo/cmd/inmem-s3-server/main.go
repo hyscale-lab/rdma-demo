@@ -61,6 +61,8 @@ type serverConfig struct {
 	rdmaRecvDepth    int
 	rdmaInline       int
 	rdmaSignalIntvl  int
+	rdmaMultiplex    bool
+	rdmaMuxSendDepth int
 	region           string
 	maxObjectSize    int64
 	storeMaxBytes    int64
@@ -86,6 +88,8 @@ func main() {
 	flag.IntVar(&cfg.rdmaRecvDepth, "rdma-recv-depth", 0, "RDMA recv queue depth (0=default)")
 	flag.IntVar(&cfg.rdmaInline, "rdma-inline-threshold", 0, "RDMA inline threshold in bytes (0=default)")
 	flag.IntVar(&cfg.rdmaSignalIntvl, "rdma-send-signal-interval", 0, "RDMA send signal interval (0=default)")
+	flag.BoolVar(&cfg.rdmaMultiplex, "rdma-multiplex", false, "enable RDMA multiplexing to demultiplex logical streams per physical connection")
+	flag.IntVar(&cfg.rdmaMuxSendDepth, "rdma-multiplex-send-queue-depth", 0, "RDMA multiplex send queue depth per physical connection (0=default)")
 	flag.StringVar(&cfg.region, "region", "us-east-1", "region returned by server")
 	flag.Int64Var(&cfg.maxObjectSize, "max-object-size", 64<<20, "max object size in bytes, <=0 means unlimited")
 	flag.Int64Var(&cfg.storeMaxBytes, "store-max-bytes", 0, "max total in-memory bytes for stored objects, <=0 means unlimited")
@@ -138,8 +142,10 @@ func main() {
 				LowCPU:             cfg.rdmaLowCPU,
 				SendSignalInterval: cfg.rdmaSignalIntvl,
 			},
-			Backlog:       cfg.rdmaBacklog,
-			AcceptWorkers: cfg.rdmaWorkers,
+			Backlog:                 cfg.rdmaBacklog,
+			AcceptWorkers:           cfg.rdmaWorkers,
+			EnableMultiplex:         cfg.rdmaMultiplex,
+			MultiplexSendQueueDepth: cfg.rdmaMuxSendDepth,
 		})
 		if err != nil {
 			log.Fatalf("listen rdma %s: %v", cfg.rdmaListen, err)

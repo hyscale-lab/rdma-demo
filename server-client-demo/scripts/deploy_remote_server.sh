@@ -18,6 +18,10 @@ RDMA_RECV_DEPTH="${RDMA_RECV_DEPTH:-0}"
 RDMA_INLINE_THRESHOLD="${RDMA_INLINE_THRESHOLD:-0}"
 RDMA_SEND_SIGNAL_INTERVAL="${RDMA_SEND_SIGNAL_INTERVAL:-0}"
 RDMA_LOWCPU="${RDMA_LOWCPU:-false}"
+RDMA_MULTIPLEX="${RDMA_MULTIPLEX:-false}"
+RDMA_MULTIPLEX_SEND_QUEUE_DEPTH="${RDMA_MULTIPLEX_SEND_QUEUE_DEPTH:-0}"
+AWS_RDMA_ENDPOINT_MUX_RECV_MODE="${AWS_RDMA_ENDPOINT_MUX_RECV_MODE:-}"
+AWS_RDMA_ENDPOINT_MUX_RECV_UNSAFE="${AWS_RDMA_ENDPOINT_MUX_RECV_UNSAFE:-}"
 
 LOCAL_BIN="$ROOT_DIR/bin/inmem-s3-server-rdma"
 REMOTE_LOG_DIR="$REMOTE_DIR/logs"
@@ -38,6 +42,12 @@ echo "starting remote server"
 ssh "$REMOTE" "set -euo pipefail
 mkdir -p '$REMOTE_LOG_DIR'
 cd '$REMOTE_DIR'
+if [ -n \"$AWS_RDMA_ENDPOINT_MUX_RECV_MODE\" ]; then
+  export AWS_RDMA_ENDPOINT_MUX_RECV_MODE=\"$AWS_RDMA_ENDPOINT_MUX_RECV_MODE\"
+fi
+if [ -n \"$AWS_RDMA_ENDPOINT_MUX_RECV_UNSAFE\" ]; then
+  export AWS_RDMA_ENDPOINT_MUX_RECV_UNSAFE=\"$AWS_RDMA_ENDPOINT_MUX_RECV_UNSAFE\"
+fi
 if [ -f '$REMOTE_PID_FILE' ]; then
   OLD_PID=\$(cat '$REMOTE_PID_FILE' || true)
   if [ -n \"\$OLD_PID\" ] && kill -0 \"\$OLD_PID\" 2>/dev/null; then
@@ -53,6 +63,10 @@ if [ \"$ENABLE_RDMA\" = \"true\" ]; then
   if [ \"$RDMA_LOWCPU\" = \"true\" ]; then
     CMD+=(\"--rdma-lowcpu\")
   fi
+  if [ \"$RDMA_MULTIPLEX\" = \"true\" ]; then
+    CMD+=(\"--rdma-multiplex\")
+  fi
+  CMD+=(\"--rdma-multiplex-send-queue-depth\" \"$RDMA_MULTIPLEX_SEND_QUEUE_DEPTH\")
 fi
 nohup \"\${CMD[@]}\" > '$REMOTE_LOG_FILE' 2>&1 &
 echo \$! > '$REMOTE_PID_FILE'
