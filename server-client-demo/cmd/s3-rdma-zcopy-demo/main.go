@@ -93,6 +93,8 @@ func main() {
 		sendDepth     int
 		recvDepth     int
 		inlineBytes   int
+		maxCredits    int
+		sendQueueLen  int
 	)
 
 	flag.StringVar(&endpoint, "endpoint", "127.0.0.1:10191", "zcopy RDMA endpoint")
@@ -104,7 +106,7 @@ func main() {
 	flag.IntVar(&putSize, "put-size", 256*1024, "PUT payload size in bytes")
 	flag.IntVar(&getOffset, "get-offset", 1024*1024, "GET target offset in shared memory")
 	flag.IntVar(&maxGetSize, "get-max-size", 512*1024, "GET max writable size in shared memory")
-	flag.IntVar(&concurrent, "concurrent-get", 1, "number of concurrent GET operations per client")
+	flag.IntVar(&concurrent, "concurrent-get", 1, "number of concurrent GET operations per client (closed-burst mode only)")
 	flag.IntVar(&clientCount, "client-count", 1, "number of s3rdmaclient instances in one process")
 	flag.DurationVar(&statsInterval, "stats-interval", time.Second, "runtime stats sampling interval (<=0 disables)")
 	flag.Float64Var(&targetRPS, "target-rps", 0, "global target requests per second (>0 enables open-loop mode)")
@@ -115,6 +117,8 @@ func main() {
 	flag.IntVar(&sendDepth, "rdma-send-depth", 0, "RDMA send queue depth (0=default)")
 	flag.IntVar(&recvDepth, "rdma-recv-depth", 0, "RDMA recv queue depth (0=default)")
 	flag.IntVar(&inlineBytes, "rdma-inline-threshold", 0, "RDMA inline threshold (0=default)")
+	flag.IntVar(&maxCredits, "max-credits", 0, "max in-flight GET credits advertised in hello (0=client default)")
+	flag.IntVar(&sendQueueLen, "send-queue-len", 0, "per-client serialized send queue length (0=client default)")
 	flag.Parse()
 
 	op = strings.ToLower(strings.TrimSpace(op))
@@ -148,6 +152,12 @@ func main() {
 	if reqTimeout <= 0 {
 		fatalf("request-timeout must be > 0")
 	}
+	if maxCredits < 0 {
+		fatalf("max-credits must be >= 0")
+	}
+	if sendQueueLen < 0 {
+		fatalf("send-queue-len must be >= 0")
+	}
 	if openLoop {
 		if targetRPS <= 0 {
 			fatalf("target-rps must be > 0")
@@ -157,6 +167,9 @@ func main() {
 		}
 		if getOffset+maxGetSize > memSize {
 			fatalf("invalid get range offset=%d max=%d mem=%d", getOffset, maxGetSize, memSize)
+		}
+		if concurrent != 1 {
+			fmt.Fprintf(os.Stderr, "note: concurrent-get=%d is ignored in open-loop mode; each launched request is one operation\n", concurrent)
 		}
 	} else {
 		getWindow, ok := mulIntChecked(concurrent, maxGetSize)
@@ -221,6 +234,8 @@ func main() {
 		cli, err := s3rdmaclient.New(s3rdmaclient.Config{
 			Endpoint:       endpoint,
 			RequestTimeout: reqTimeout,
+			MaxCredits:     maxCredits,
+			SendQueueLen:   sendQueueLen,
 			VerbsOptions: awsrdmahttp.VerbsOptions{
 				FramePayloadSize: frameSize,
 				SendQueueDepth:   sendDepth,

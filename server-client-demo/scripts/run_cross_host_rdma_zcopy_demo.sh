@@ -24,6 +24,8 @@ TARGET_RPS="${TARGET_RPS:-0}"
 DURATION="${DURATION:-0s}"
 VERIFY_RESULT="${VERIFY_RESULT:-true}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-10s}"
+MAX_CREDITS="${MAX_CREDITS:-0}"
+SEND_QUEUE_LEN="${SEND_QUEUE_LEN:-0}"
 RUN_PERF="${RUN_PERF:-true}"
 PERF_EVENTS="${PERF_EVENTS:-cycles:u,cycles:k,instructions,task-clock,context-switches,cpu-migrations,cache-misses}"
 PREPARE_REMOTE_SERVER="${PREPARE_REMOTE_SERVER:-true}"
@@ -71,6 +73,8 @@ echo "run local zcopy demo"
     --client-count "$CLIENT_COUNT" \
     --stats-interval "$STATS_INTERVAL" \
     --request-timeout "$REQUEST_TIMEOUT" \
+    --max-credits "$MAX_CREDITS" \
+    --send-queue-len "$SEND_QUEUE_LEN" \
     --verify-result="$VERIFY_RESULT"
   )
 
