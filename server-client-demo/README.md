@@ -33,13 +33,23 @@ go run ./cmd/inmem-s3-server \
   --tcp-listen 127.0.0.1:10090
 ```
 
-3. Start server with RDMA listener
+3. Start server with RDMA zcopy protocol listener
 
 ```bash
 go run -tags rdma ./cmd/inmem-s3-server \
   --tcp-listen 127.0.0.1:10090 \
-  --enable-rdma \
-  --rdma-listen 127.0.0.1:10190
+  --enable-rdma-zcopy \
+  --rdma-zcopy-listen 127.0.0.1:10191
+```
+
+4. Run zcopy demo (returns `offset/size` in shared memory)
+
+```bash
+CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-zcopy-demo \
+  --endpoint 127.0.0.1:10191 \
+  --bucket bench-bucket \
+  --key zcopy-demo \
+  --concurrent-get 8
 ```
 
 ## Some Script
@@ -52,5 +62,18 @@ Can simply use `run_cross_host_*.sh`
 for example
 
 ```
- MODES=both PREPARE_REMOTE_SERVER=true RESTART_REMOTE_BETWEEN_MODES=false S3_CLIENT_COUNT=140 OPEN_LOOP_CLIENT_FANOUT=true TARGET_RPS=3000 DURATION=20s OBJECT_SIZE=262144 WARMUP=280 REQUEST_TIMEOUT=5s RDMA_SHARED_HTTP_POOL=false RDMA_MAX_CONNS_PER_HOST=0 RDMA_ENDPOINT_POOL_SIZE=0 RDMA_ENDPOINT_MULTIPLEX=false RDMA_MULTIPLEX=false /users/Liquidz/rdma-demo/server-client-demo/scripts/compare_cross_host.sh
+ CLIENT_COUNT=140 TARGET_RPS=500 DURATION=20s MEM_SIZE=$((32*1024*1024)) CONCURRENT_GET=8 /users/Liquidz/rdma-demo/server-client-demo/scripts/run_cross_host_rdma_zcopy_demo.sh
+```
+
+for zcopy protocol smoke test
+
+```bash
+/users/Liquidz/rdma-demo/server-client-demo/scripts/run_cross_host_rdma_zcopy_demo.sh
+```
+
+for zcopy rps sweep (500..3000, step 500)
+
+```bash
+CLIENT_COUNT=140 MEM_SIZE=$((32*1024*1024)) DURATION=20s \
+/users/Liquidz/rdma-demo/server-client-demo/scripts/run_cross_host_rdma_zcopy_rps_sweep.sh
 ```
