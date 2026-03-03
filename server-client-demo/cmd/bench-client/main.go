@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -328,23 +327,8 @@ func newS3Client(cfg benchConfig, stats *dialStats, httpClient aws.HTTPClient) (
 	}
 
 	if cfg.mode == "rdma" {
-		dialer := awsrdmahttp.NewVerbsDialer(awsrdmahttp.VerbsOptions{
-			FramePayloadSize:   cfg.rdmaFramePayload,
-			SendQueueDepth:     cfg.rdmaSendDepth,
-			RecvQueueDepth:     cfg.rdmaRecvDepth,
-			InlineThreshold:    cfg.rdmaInline,
-			LowCPU:             cfg.rdmaLowCPU,
-			SendSignalInterval: cfg.rdmaSignalIntvl,
-		})
-		dialer.DisableFallback = !cfg.allowFallback
-		dialer.OpenParallelism = cfg.rdmaOpenParallel
-		dialer.OpenMinInterval = cfg.rdmaOpenMinIntvl
-		dialer.FallbackDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-			stats.fallbackDials.Add(1)
-			return (&net.Dialer{}).DialContext(ctx, network, address)
-		}
-		opts.EnableRDMATransport = true
-		opts.RDMADialer = dialer
+		_ = stats
+		return nil, fmt.Errorf("bench-client rdma mode is no longer supported; use mode=tcp or s3-rdma-zcopy-demo")
 	}
 
 	return s3.New(opts), nil

@@ -51,8 +51,8 @@ func parseStoreEvictPolicy(v string) (storeEvictPolicy, error) {
 
 type serverConfig struct {
 	tcpListen        string
-	enableRDMA       bool
-	rdmaListen       string
+	enableRDMAZCopy  bool
+	rdmaZCopyListen  string
 	rdmaBacklog      int
 	rdmaWorkers      int
 	rdmaLowCPU       bool
@@ -76,8 +76,8 @@ type runningServer struct {
 func main() {
 	cfg := serverConfig{}
 	flag.StringVar(&cfg.tcpListen, "tcp-listen", "127.0.0.1:10090", "TCP listen address, empty disables TCP")
-	flag.BoolVar(&cfg.enableRDMA, "enable-rdma", false, "enable RDMA verbs listener")
-	flag.StringVar(&cfg.rdmaListen, "rdma-listen", "127.0.0.1:10190", "RDMA listen address")
+	flag.BoolVar(&cfg.enableRDMAZCopy, "enable-rdma-zcopy", false, "enable RDMA zcopy protocol listener")
+	flag.StringVar(&cfg.rdmaZCopyListen, "rdma-zcopy-listen", "127.0.0.1:10191", "RDMA zcopy listen address")
 	flag.IntVar(&cfg.rdmaBacklog, "rdma-backlog", awsrdmahttp.DefaultVerbsListenBacklog, "RDMA listen backlog")
 	flag.IntVar(&cfg.rdmaWorkers, "rdma-accept-workers", awsrdmahttp.DefaultVerbsAcceptWorkers, "RDMA accept worker count")
 	flag.BoolVar(&cfg.rdmaLowCPU, "rdma-lowcpu", false, "use RDMA low-cpu mode")
@@ -92,7 +92,7 @@ func main() {
 	flag.StringVar(&cfg.storeEvictPolicy, "store-evict-policy", string(storeEvictPolicyReject), "store eviction policy when full: reject or fifo")
 	flag.Parse()
 
-	if cfg.tcpListen == "" && !cfg.enableRDMA {
+	if cfg.tcpListen == "" && !cfg.enableRDMAZCopy {
 		log.Fatal("at least one listener must be enabled")
 	}
 	if cfg.storeMaxBytes < 0 {
@@ -128,8 +128,9 @@ func main() {
 		})
 	}
 
-	if cfg.enableRDMA {
-		ln, err := awsrdmahttp.NewVerbsListener("rdma", cfg.rdmaListen, awsrdmahttp.VerbsListenerOptions{
+	var zcopySrv *zcopyService
+	if cfg.enableRDMAZCopy {
+		msgLn, err := awsrdmahttp.NewVerbsMessageListener("rdma", cfg.rdmaZCopyListen, awsrdmahttp.VerbsListenerOptions{
 			VerbsOptions: awsrdmahttp.VerbsOptions{
 				FramePayloadSize:   cfg.rdmaFramePayload,
 				SendQueueDepth:     cfg.rdmaSendDepth,
@@ -142,29 +143,29 @@ func main() {
 			AcceptWorkers: cfg.rdmaWorkers,
 		})
 		if err != nil {
-			log.Fatalf("listen rdma %s: %v", cfg.rdmaListen, err)
+			log.Fatalf("listen rdma zcopy %s: %v", cfg.rdmaZCopyListen, err)
 		}
-		servers = append(servers, &runningServer{
-			name: "rdma",
-			ln:   ln,
-			srv: &http.Server{
-				Handler:           handler,
-				ReadHeaderTimeout: 5 * time.Second,
-			},
-		})
+		zcopySrv = newZCopyService(msgLn, store, cfg.maxObjectSize)
+		log.Printf("rdma-zcopy listening on %s", msgLn.Addr())
 	}
-
-	if len(servers) == 0 {
+	if len(servers) == 0 && zcopySrv == nil {
 		log.Fatal("no listener started")
 	}
 
-	errCh := make(chan error, len(servers))
+	errCh := make(chan error, len(servers)+1)
 	for _, rs := range servers {
 		rs := rs
 		log.Printf("%s listening on %s", rs.name, rs.ln.Addr())
 		go func() {
 			if err := rs.srv.Serve(rs.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("%s serve: %w", rs.name, err)
+			}
+		}()
+	}
+	if zcopySrv != nil {
+		go func() {
+			if err := zcopySrv.Serve(); err != nil && !errors.Is(err, net.ErrClosed) {
+				errCh <- fmt.Errorf("rdma-zcopy serve: %w", err)
 			}
 		}()
 	}
@@ -183,6 +184,11 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if zcopySrv != nil {
+		if err := zcopySrv.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("rdma-zcopy shutdown: %v", err)
+		}
+	}
 	for _, rs := range servers {
 		if err := rs.srv.Shutdown(ctx); err != nil {
 			log.Printf("%s shutdown: %v", rs.name, err)

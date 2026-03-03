@@ -6,12 +6,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE="${REMOTE:-Liquidz@10.0.1.2}"
 REMOTE_DIR="${REMOTE_DIR:-/users/Liquidz/rdma-demo/server-client-demo}"
 TCP_LISTEN="${TCP_LISTEN:-10.0.1.2:10090}"
-RDMA_LISTEN="${RDMA_LISTEN:-10.0.1.2:10190}"
-ENABLE_RDMA="${ENABLE_RDMA:-true}"
+ENABLE_RDMA_ZCOPY="${ENABLE_RDMA_ZCOPY:-true}"
 REGION="${REGION:-us-east-1}"
 MAX_OBJECT_SIZE="${MAX_OBJECT_SIZE:-67108864}"
 STORE_MAX_BYTES="${STORE_MAX_BYTES:-0}"
 STORE_EVICT_POLICY="${STORE_EVICT_POLICY:-reject}"
+RDMA_ZCOPY_LISTEN="${RDMA_ZCOPY_LISTEN:-10.0.1.2:10191}"
 RDMA_FRAME_PAYLOAD="${RDMA_FRAME_PAYLOAD:-0}"
 RDMA_SEND_DEPTH="${RDMA_SEND_DEPTH:-0}"
 RDMA_RECV_DEPTH="${RDMA_RECV_DEPTH:-0}"
@@ -48,8 +48,8 @@ fi
 pkill -x inmem-s3-server-rdma >/dev/null 2>&1 || true
 sleep 1
 CMD=(\"./bin/inmem-s3-server-rdma\" \"--tcp-listen\" \"$TCP_LISTEN\" \"--region\" \"$REGION\" \"--max-object-size\" \"$MAX_OBJECT_SIZE\" \"--store-max-bytes\" \"$STORE_MAX_BYTES\" \"--store-evict-policy\" \"$STORE_EVICT_POLICY\")
-if [ \"$ENABLE_RDMA\" = \"true\" ]; then
-  CMD+=(\"--enable-rdma\" \"--rdma-listen\" \"$RDMA_LISTEN\" \"--rdma-frame-payload\" \"$RDMA_FRAME_PAYLOAD\" \"--rdma-send-depth\" \"$RDMA_SEND_DEPTH\" \"--rdma-recv-depth\" \"$RDMA_RECV_DEPTH\" \"--rdma-inline-threshold\" \"$RDMA_INLINE_THRESHOLD\" \"--rdma-send-signal-interval\" \"$RDMA_SEND_SIGNAL_INTERVAL\")
+if [ \"$ENABLE_RDMA_ZCOPY\" = \"true\" ]; then
+  CMD+=(\"--enable-rdma-zcopy\" \"--rdma-zcopy-listen\" \"$RDMA_ZCOPY_LISTEN\" \"--rdma-frame-payload\" \"$RDMA_FRAME_PAYLOAD\" \"--rdma-send-depth\" \"$RDMA_SEND_DEPTH\" \"--rdma-recv-depth\" \"$RDMA_RECV_DEPTH\" \"--rdma-inline-threshold\" \"$RDMA_INLINE_THRESHOLD\" \"--rdma-send-signal-interval\" \"$RDMA_SEND_SIGNAL_INTERVAL\")
   if [ \"$RDMA_LOWCPU\" = \"true\" ]; then
     CMD+=(\"--rdma-lowcpu\")
   fi
@@ -71,6 +71,6 @@ tail -n 20 '$REMOTE_LOG_FILE'
 echo
 echo "remote server started"
 echo "tcp endpoint:  http://$TCP_LISTEN"
-if [ "$ENABLE_RDMA" = "true" ]; then
-  echo "rdma endpoint: http://$RDMA_LISTEN"
+if [ "$ENABLE_RDMA_ZCOPY" = "true" ]; then
+  echo "rdma zcopy endpoint: $RDMA_ZCOPY_LISTEN"
 fi
