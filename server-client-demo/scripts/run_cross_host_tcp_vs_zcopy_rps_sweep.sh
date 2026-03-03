@@ -30,7 +30,7 @@ ZCOPY_OP="${ZCOPY_OP:-$TCP_OP}"
 RUN_PERF="${RUN_PERF:-true}"
 PERF_EVENTS="${PERF_EVENTS:-cycles:u,cycles:k,instructions,task-clock,context-switches,cpu-migrations,cache-misses}"
 VERIFY_RESULT="${VERIFY_RESULT:-true}"
-REDEPLOY_EACH_CASE="${REDEPLOY_EACH_CASE:-false}"
+REDEPLOY_EACH_CASE="${REDEPLOY_EACH_CASE:-true}"
 
 extract_tcp_throughput() {
   local log_file="$1"
