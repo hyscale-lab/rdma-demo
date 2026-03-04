@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Run a basic create/put/get/list/delete smoke test via boto3 over TCP."
     )
-    p.add_argument("--endpoint", default="http://127.0.0.1:10090", help="S3 endpoint URL")
+    p.add_argument("--endpoint", default="http://10.0.1.2:10090", help="S3 endpoint URL")
     p.add_argument("--region", default="us-east-1", help="AWS region")
     p.add_argument("--access-key", default="test", help="Access key")
     p.add_argument("--secret-key", default="test", help="Secret key")
