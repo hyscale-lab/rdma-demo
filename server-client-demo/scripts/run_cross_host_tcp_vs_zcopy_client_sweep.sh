@@ -6,33 +6,34 @@ TCP_RUN_SCRIPT="$ROOT_DIR/scripts/run_cross_host_tcp_sdk_demo.sh"
 ZCOPY_RUN_SCRIPT="$ROOT_DIR/scripts/run_cross_host_rdma_zcopy_demo.sh"
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
-RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/results/tcp-vs-zcopy-rps-sweep-$RUN_ID}"
+RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/results/tcp-vs-zcopy-client-sweep-$RUN_ID}"
 SUMMARY_CSV="$RESULT_DIR/summary.csv"
 
-RPS_START="${RPS_START:-500}"
-RPS_END="${RPS_END:-3000}"
-RPS_STEP="${RPS_STEP:-500}"
-
+CLIENT_COUNTS="${CLIENT_COUNTS:-1 10 25 50 100 150}"
+TARGET_RPS="${TARGET_RPS:-1000}"
 DURATION="${DURATION:-20s}"
-CLIENT_COUNT="${CLIENT_COUNT:-140}"
+
 MEM_SIZE="${MEM_SIZE:-$((32*1024*1024))}"
-PUT_SIZE="${PUT_SIZE:-$((256*1024))}"
-GET_MAX_SIZE="${GET_MAX_SIZE:-$((512*1024))}"
-CONCURRENT_GET="${CONCURRENT_GET:-8}"
+PUT_OFFSET="${PUT_OFFSET:-0}"
+PUT_SIZE="${PUT_SIZE:-1000000}"
+GET_OFFSET="${GET_OFFSET:-$((1024*1024))}"
+GET_MAX_SIZE="${GET_MAX_SIZE:-$PUT_SIZE}"
+CONCURRENT_GET="${CONCURRENT_GET:-1}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-10s}"
 STATS_INTERVAL="${STATS_INTERVAL:-100ms}"
+
 TCP_OP="${TCP_OP:-put-get}"
 TCP_WARMUP="${TCP_WARMUP:-100}"
-TCP_PREFILL="${TCP_PREFILL:-$CLIENT_COUNT}"
+TCP_PREFILL="${TCP_PREFILL:-}"
 TCP_OPEN_LOOP_CLIENT_FANOUT="${TCP_OPEN_LOOP_CLIENT_FANOUT:-false}"
 ZCOPY_OP="${ZCOPY_OP:-$TCP_OP}"
 
 RUN_PERF="${RUN_PERF:-true}"
 PERF_EVENTS="${PERF_EVENTS:-cycles:u,cycles:k,instructions,task-clock,context-switches,cpu-migrations,cache-misses}"
-VERIFY_RESULT="${VERIFY_RESULT:-true}"
+VERIFY_RESULT="${VERIFY_RESULT:-false}"
 REDEPLOY_EACH_CASE="${REDEPLOY_EACH_CASE:-true}"
-STOP_ON_CASE_ERROR="${STOP_ON_CASE_ERROR:-false}"
 REDEPLOY_BEFORE_ZCOPY="${REDEPLOY_BEFORE_ZCOPY:-true}"
+STOP_ON_CASE_ERROR="${STOP_ON_CASE_ERROR:-false}"
 
 extract_tcp_throughput() {
   local log_file="$1"
@@ -44,14 +45,14 @@ extract_zcopy_throughput() {
   grep -m1 '^benchmark mode=' "$log_file" | sed -n 's/.*throughput=\([^ ]*\) req\/s.*/\1/p'
 }
 
-extract_latency_p95() {
-  local log_file="$1"
-  grep -m1 '^latency[: ]' "$log_file" | sed -n 's/.*p95=\([^ ]*\).*/\1/p'
-}
-
 extract_latency_avg() {
   local log_file="$1"
   grep -m1 '^latency[: ]' "$log_file" | sed -n 's/.*avg=\([^ ]*\).*/\1/p'
+}
+
+extract_latency_p95() {
+  local log_file="$1"
+  grep -m1 '^latency[: ]' "$log_file" | sed -n 's/.*p95=\([^ ]*\).*/\1/p'
 }
 
 extract_perf_counter() {
@@ -60,32 +61,55 @@ extract_perf_counter() {
   awk -v event="$event" '$0 ~ ("[[:space:]]" event "[[:space:]]*$") {gsub(/,/, "", $1); print $1; exit}' "$log_file"
 }
 
-mkdir -p "$RESULT_DIR"
-echo "rps,tcp_status,tcp_throughput,tcp_avg,tcp_p95,tcp_cycles_u,tcp_cycles_k,tcp_instructions,zcopy_status,zcopy_throughput,zcopy_avg,zcopy_p95,zcopy_cycles_u,zcopy_cycles_k,zcopy_instructions" > "$SUMMARY_CSV"
+for c in $CLIENT_COUNTS; do
+  if ! [[ "$c" =~ ^[0-9]+$ ]] || [ "$c" -le 0 ]; then
+    echo "invalid client count: $c" >&2
+    exit 1
+  fi
+done
 
-echo "tcp vs zcopy rps sweep started"
+if [ $((PUT_OFFSET + PUT_SIZE)) -gt "$MEM_SIZE" ]; then
+  echo "invalid memory layout: PUT_OFFSET + PUT_SIZE > MEM_SIZE" >&2
+  echo "PUT_OFFSET=$PUT_OFFSET PUT_SIZE=$PUT_SIZE MEM_SIZE=$MEM_SIZE" >&2
+  exit 1
+fi
+if [ $((GET_OFFSET + GET_MAX_SIZE)) -gt "$MEM_SIZE" ]; then
+  echo "invalid memory layout: GET_OFFSET + GET_MAX_SIZE > MEM_SIZE" >&2
+  echo "GET_OFFSET=$GET_OFFSET GET_MAX_SIZE=$GET_MAX_SIZE MEM_SIZE=$MEM_SIZE" >&2
+  exit 1
+fi
+
+mkdir -p "$RESULT_DIR"
+echo "client_count,tcp_status,tcp_throughput,tcp_avg,tcp_p95,tcp_cycles_u,tcp_cycles_k,tcp_instructions,zcopy_status,zcopy_throughput,zcopy_avg,zcopy_p95,zcopy_cycles_u,zcopy_cycles_k,zcopy_instructions" > "$SUMMARY_CSV"
+
+echo "tcp vs zcopy client sweep started"
 echo "result_dir=$RESULT_DIR"
-echo "rps_range=${RPS_START}..${RPS_END} step=${RPS_STEP} duration=$DURATION client_count=$CLIENT_COUNT put_size=$PUT_SIZE tcp_op=$TCP_OP zcopy_op=$ZCOPY_OP"
+echo "client_counts=$CLIENT_COUNTS target_rps=$TARGET_RPS duration=$DURATION put_size=$PUT_SIZE tcp_op=$TCP_OP zcopy_op=$ZCOPY_OP"
 
 prepare_remote=true
-for ((rps=RPS_START; rps<=RPS_END; rps+=RPS_STEP)); do
-  tcp_log="$RESULT_DIR/rps_${rps}_tcp.log"
-  zcopy_log="$RESULT_DIR/rps_${rps}_zcopy.log"
+for client_count in $CLIENT_COUNTS; do
+  tcp_log="$RESULT_DIR/client_${client_count}_tcp.log"
+  zcopy_log="$RESULT_DIR/client_${client_count}_zcopy.log"
+
+  tcp_prefill_case="$client_count"
+  if [ -n "$TCP_PREFILL" ]; then
+    tcp_prefill_case="$TCP_PREFILL"
+  fi
 
   echo
-  echo "===== run target_rps=$rps duration=$DURATION client_count=$CLIENT_COUNT ====="
+  echo "===== run client_count=$client_count target_rps=$TARGET_RPS duration=$DURATION payload_size=$PUT_SIZE ====="
   echo "----- tcp -----"
   if (
     PREPARE_REMOTE_SERVER="$prepare_remote" \
     ENABLE_RDMA_ZCOPY=true \
-    TARGET_RPS="$rps" \
+    TARGET_RPS="$TARGET_RPS" \
     DURATION="$DURATION" \
     OP="$TCP_OP" \
-    S3_CLIENT_COUNT="$CLIENT_COUNT" \
-    PREFILL="$TCP_PREFILL" \
+    S3_CLIENT_COUNT="$client_count" \
+    PREFILL="$tcp_prefill_case" \
     WARMUP="$TCP_WARMUP" \
     OBJECT_SIZE="$PUT_SIZE" \
-    KEY_PREFIX="tcp-sdk-rps-${rps}" \
+    KEY_PREFIX="tcp-sdk-clients-${client_count}" \
     REQUEST_TIMEOUT="$REQUEST_TIMEOUT" \
     OPEN_LOOP_CLIENT_FANOUT="$TCP_OPEN_LOOP_CLIENT_FANOUT" \
     RUN_PERF="$RUN_PERF" \
@@ -95,7 +119,7 @@ for ((rps=RPS_START; rps<=RPS_END; rps+=RPS_STEP)); do
     tcp_status="ok"
   else
     tcp_status="failed"
-    echo "warning: tcp case failed rps=$rps" >&2
+    echo "warning: tcp case failed client_count=$client_count" >&2
     if [ "$STOP_ON_CASE_ERROR" = "true" ]; then
       exit 1
     fi
@@ -108,15 +132,17 @@ for ((rps=RPS_START; rps<=RPS_END; rps+=RPS_STEP)); do
   fi
   if (
     PREPARE_REMOTE_SERVER="$zcopy_prepare" \
-    TARGET_RPS="$rps" \
+    TARGET_RPS="$TARGET_RPS" \
     DURATION="$DURATION" \
     OP="$ZCOPY_OP" \
-    CLIENT_COUNT="$CLIENT_COUNT" \
+    CLIENT_COUNT="$client_count" \
     MEM_SIZE="$MEM_SIZE" \
+    PUT_OFFSET="$PUT_OFFSET" \
     PUT_SIZE="$PUT_SIZE" \
+    GET_OFFSET="$GET_OFFSET" \
     GET_MAX_SIZE="$GET_MAX_SIZE" \
     CONCURRENT_GET="$CONCURRENT_GET" \
-    KEY="zcopy-rps-${rps}" \
+    KEY="zcopy-clients-${client_count}" \
     REQUEST_TIMEOUT="$REQUEST_TIMEOUT" \
     STATS_INTERVAL="$STATS_INTERVAL" \
     RUN_PERF="$RUN_PERF" \
@@ -127,7 +153,7 @@ for ((rps=RPS_START; rps<=RPS_END; rps+=RPS_STEP)); do
     zcopy_status="ok"
   else
     zcopy_status="failed"
-    echo "warning: zcopy case failed rps=$rps" >&2
+    echo "warning: zcopy case failed client_count=$client_count" >&2
     if [ "$STOP_ON_CASE_ERROR" = "true" ]; then
       exit 1
     fi
@@ -147,7 +173,7 @@ for ((rps=RPS_START; rps<=RPS_END; rps+=RPS_STEP)); do
   zcopy_cycles_k="$(extract_perf_counter "$zcopy_log" 'cycles:k' || true)"
   zcopy_instructions="$(extract_perf_counter "$zcopy_log" 'instructions' || true)"
 
-  echo "${rps},${tcp_status},${tcp_throughput},${tcp_avg},${tcp_p95},${tcp_cycles_u},${tcp_cycles_k},${tcp_instructions},${zcopy_status},${zcopy_throughput},${zcopy_avg},${zcopy_p95},${zcopy_cycles_u},${zcopy_cycles_k},${zcopy_instructions}" >> "$SUMMARY_CSV"
+  echo "${client_count},${tcp_status},${tcp_throughput},${tcp_avg},${tcp_p95},${tcp_cycles_u},${tcp_cycles_k},${tcp_instructions},${zcopy_status},${zcopy_throughput},${zcopy_avg},${zcopy_p95},${zcopy_cycles_u},${zcopy_cycles_k},${zcopy_instructions}" >> "$SUMMARY_CSV"
 
   if [ "$REDEPLOY_EACH_CASE" = "true" ]; then
     prepare_remote=true
@@ -157,6 +183,6 @@ for ((rps=RPS_START; rps<=RPS_END; rps+=RPS_STEP)); do
 done
 
 echo
-echo "tcp vs zcopy rps sweep completed"
+echo "tcp vs zcopy client sweep completed"
 echo "summary: $SUMMARY_CSV"
 echo "logs:    $RESULT_DIR"
