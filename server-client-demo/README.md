@@ -77,3 +77,27 @@ for zcopy rps sweep (500..3000, step 500)
 CLIENT_COUNT=140 MEM_SIZE=$((32*1024*1024)) DURATION=20s \
 /users/Liquidz/rdma-demo/server-client-demo/scripts/run_cross_host_rdma_zcopy_rps_sweep.sh
 ```
+
+## reuse the server
+
+deploy the inmem-s3-server
+```
+export REMOTE="user@10.0.1.2"
+export REMOTE_DIR="/users/user/rdma-demo/server-client-demo"
+export TCP_LISTEN="10.0.1.2:10090"
+export RDMA_ZCOPY_LISTEN="10.0.1.2:10191"
+
+./scripts/stop_remote_server.sh
+ENABLE_RDMA_ZCOPY=true \
+REMOTE="$REMOTE" \
+REMOTE_DIR="$REMOTE_DIR" \
+TCP_LISTEN="$TCP_LISTEN" \
+RDMA_ZCOPY_LISTEN="$RDMA_ZCOPY_LISTEN" \
+./scripts/deploy_remote_server.sh
+
+```
+
+create bucket and deploy object
+```
+python3 scripts/prepare_tcp_bucket_object.py
+```
