@@ -1,146 +1,144 @@
 #!/usr/bin/env python3
-"""Create bucket and upload one object to the in-memory S3 server (TCP path).
+"""Prepare a local payload tree for the in-memory S3 server.
 
-Edit the CONFIG section below, then run:
-  python3 scripts/prepare_tcp_bucket_object.py
+Examples:
+  python3 scripts/prepare_tcp_bucket_object.py \
+    --root ./payload-root \
+    --bucket nexus-benchmark-payload \
+    --key input_payload/mapper/part-00000.csv \
+    --size 1048576
+
+  python3 scripts/prepare_tcp_bucket_object.py \
+    --root ./payload-root \
+    --bucket bench-bucket \
+    --key-prefix tcp-sdk-demo \
+    --count 1000 \
+    --size 262144
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import argparse
+import os
+from pathlib import Path
 import sys
 
-import boto3
-from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
 
-
-# ===================== CONFIG (edit here) =====================
-ENDPOINT = "http://10.0.1.2:10090"
-REGION = "us-east-1"
-ACCESS_KEY = "test"
-SECRET_KEY = "test"
-
-BUCKET = "bench-bucket"
-KEY = "seed-object-1mb"
-OBJECT_SIZE = 1_000_000
-
-# payload mode: "pattern", "zeros", "random"
-PAYLOAD_MODE = "pattern"
-# =============================================================
-
-
-@dataclass
-class AppConfig:
-    endpoint: str
-    region: str
-    access_key: str
-    secret_key: str
-    bucket: str
-    key: str
-    object_size: int
-    payload_mode: str
-
-
-def build_client(cfg: AppConfig):
-    return boto3.client(
-        "s3",
-        endpoint_url=cfg.endpoint,
-        region_name=cfg.region,
-        aws_access_key_id=cfg.access_key,
-        aws_secret_access_key=cfg.secret_key,
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-            retries={"max_attempts": 3, "mode": "standard"},
-        ),
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create a payload tree where top-level folders are buckets and nested files are object keys."
     )
-
-
-def ensure_bucket(s3, cfg: AppConfig) -> None:
-    create_args = {"Bucket": cfg.bucket}
-    if cfg.region != "us-east-1":
-        create_args["CreateBucketConfiguration"] = {
-            "LocationConstraint": cfg.region,
-        }
-
-    try:
-        s3.create_bucket(**create_args)
-        print(f"[ok] bucket created: {cfg.bucket}")
-        return
-    except ClientError as err:
-        code = err.response.get("Error", {}).get("Code", "")
-        if code in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
-            print(f"[ok] bucket already exists: {cfg.bucket}")
-            return
-        raise
-
-
-def make_payload(cfg: AppConfig) -> bytes:
-    if cfg.object_size < 0:
-        raise ValueError("OBJECT_SIZE must be >= 0")
-
-    if cfg.payload_mode == "pattern":
-        return bytes((i * 31 + 7) & 0xFF for i in range(cfg.object_size))
-    if cfg.payload_mode == "zeros":
-        return b"\x00" * cfg.object_size
-    if cfg.payload_mode == "random":
-        # Import lazily to avoid dependency at startup.
-        import os
-
-        return os.urandom(cfg.object_size)
-
-    raise ValueError(f"invalid PAYLOAD_MODE={cfg.payload_mode!r}")
-
-
-def put_and_verify(s3, cfg: AppConfig, payload: bytes) -> None:
-    s3.put_object(
-        Bucket=cfg.bucket,
-        Key=cfg.key,
-        Body=payload,
-        ContentLength=len(payload),
+    parser.add_argument(
+        "--root",
+        default="./payload-root",
+        help="Payload root directory written by this script",
     )
-    head = s3.head_object(Bucket=cfg.bucket, Key=cfg.key)
-    remote_size = int(head.get("ContentLength", -1))
-    if remote_size != len(payload):
-        raise RuntimeError(
-            f"uploaded size mismatch: local={len(payload)} remote={remote_size}"
-        )
-    print(f"[ok] object uploaded: s3://{cfg.bucket}/{cfg.key} size={remote_size}")
+    parser.add_argument("--bucket", default="bench-bucket", help="Bucket directory name")
+    parser.add_argument(
+        "--key",
+        default="seed-object-1mb",
+        help="Single object key to create when --count=1 and --key-prefix is not used",
+    )
+    parser.add_argument(
+        "--key-prefix",
+        default="",
+        help="Generate benchmark-style keys <prefix>-00000000 .. when set",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="Number of objects to generate when using --key-prefix",
+    )
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="Starting index for generated benchmark-style keys",
+    )
+    parser.add_argument("--size", type=int, default=1_000_000, help="Payload size in bytes")
+    parser.add_argument(
+        "--payload-mode",
+        choices=("pattern", "zeros", "random"),
+        default="pattern",
+        help="Payload generation mode",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing files instead of failing",
+    )
+    return parser.parse_args()
+
+
+def make_payload(size: int, payload_mode: str) -> bytes:
+    if size < 0:
+        raise ValueError("size must be >= 0")
+
+    if payload_mode == "pattern":
+        return bytes((i * 31 + 7) & 0xFF for i in range(size))
+    if payload_mode == "zeros":
+        return b"\x00" * size
+    if payload_mode == "random":
+        return os.urandom(size)
+    raise ValueError(f"invalid payload mode: {payload_mode!r}")
+
+
+def object_key(prefix: str, index: int) -> str:
+    return f"{prefix}-{index:08d}"
+
+
+def target_keys(args: argparse.Namespace) -> list[str]:
+    if args.key_prefix:
+        if args.count <= 0:
+            raise ValueError("count must be > 0 when using --key-prefix")
+        if args.start_index < 0:
+            raise ValueError("start-index must be >= 0")
+        return [object_key(args.key_prefix, args.start_index + i) for i in range(args.count)]
+
+    if args.count != 1:
+        raise ValueError("count can only be > 1 when using --key-prefix")
+    if not args.key:
+        raise ValueError("key must not be empty")
+    return [args.key]
+
+
+def write_payload_file(path: Path, payload: bytes, overwrite: bool) -> None:
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"{path} already exists (use --overwrite)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
 
 
 def main() -> int:
-    cfg = AppConfig(
-        endpoint=ENDPOINT.strip(),
-        region=REGION.strip(),
-        access_key=ACCESS_KEY.strip(),
-        secret_key=SECRET_KEY.strip(),
-        bucket=BUCKET.strip(),
-        key=KEY.strip(),
-        object_size=OBJECT_SIZE,
-        payload_mode=PAYLOAD_MODE.strip().lower(),
-    )
+    args = parse_args()
 
-    if not cfg.endpoint:
-        print("ENDPOINT must not be empty", file=sys.stderr)
-        return 2
-    if not cfg.bucket:
-        print("BUCKET must not be empty", file=sys.stderr)
-        return 2
-    if not cfg.key:
-        print("KEY must not be empty", file=sys.stderr)
+    if not args.bucket:
+        print("bucket must not be empty", file=sys.stderr)
         return 2
 
     try:
-        print(f"[info] endpoint={cfg.endpoint}")
-        print(f"[info] bucket={cfg.bucket} key={cfg.key} size={cfg.object_size}")
-        s3 = build_client(cfg)
-        ensure_bucket(s3, cfg)
-        payload = make_payload(cfg)
-        put_and_verify(s3, cfg, payload)
-        print("[done] bucket/object preparation finished")
+        payload = make_payload(args.size, args.payload_mode)
+        keys = target_keys(args)
+        root = Path(args.root).resolve()
+        bucket_root = root / args.bucket
+
+        print(f"[info] root={root}")
+        print(f"[info] bucket={args.bucket} objects={len(keys)} size={args.size} mode={args.payload_mode}")
+
+        for key in keys:
+            out_path = bucket_root / Path(key)
+            write_payload_file(out_path, payload, args.overwrite)
+
+        print(f"[ok] wrote payload tree under {bucket_root}")
+        if len(keys) == 1:
+            print(f"[ok] object key: {keys[0]}")
+        else:
+            print(f"[ok] first key: {keys[0]}")
+            print(f"[ok] last key:  {keys[-1]}")
+        print("[done] payload preparation finished")
         return 0
-    except (ClientError, BotoCoreError, ValueError, RuntimeError) as err:
+    except (ValueError, OSError) as err:
         print(f"[error] {err}", file=sys.stderr)
         return 1
 

@@ -11,6 +11,8 @@ REGION="${REGION:-us-east-1}"
 MAX_OBJECT_SIZE="${MAX_OBJECT_SIZE:-67108864}"
 STORE_MAX_BYTES="${STORE_MAX_BYTES:-0}"
 STORE_EVICT_POLICY="${STORE_EVICT_POLICY:-reject}"
+PAYLOAD_ROOT="${PAYLOAD_ROOT:-}"
+CONTROL_GRPC_LISTEN="${CONTROL_GRPC_LISTEN:-}"
 RDMA_ZCOPY_LISTEN="${RDMA_ZCOPY_LISTEN:-10.0.1.2:10191}"
 RDMA_FRAME_PAYLOAD="${RDMA_FRAME_PAYLOAD:-0}"
 RDMA_SEND_DEPTH="${RDMA_SEND_DEPTH:-0}"
@@ -48,6 +50,12 @@ fi
 pkill -x inmem-s3-server-rdma >/dev/null 2>&1 || true
 sleep 1
 CMD=(\"./bin/inmem-s3-server-rdma\" \"--tcp-listen\" \"$TCP_LISTEN\" \"--region\" \"$REGION\" \"--max-object-size\" \"$MAX_OBJECT_SIZE\" \"--store-max-bytes\" \"$STORE_MAX_BYTES\" \"--store-evict-policy\" \"$STORE_EVICT_POLICY\")
+if [ -n \"$PAYLOAD_ROOT\" ]; then
+  CMD+=(\"--payload-root\" \"$PAYLOAD_ROOT\")
+fi
+if [ -n \"$CONTROL_GRPC_LISTEN\" ]; then
+  CMD+=(\"--control-grpc-listen\" \"$CONTROL_GRPC_LISTEN\")
+fi
 if [ \"$ENABLE_RDMA_ZCOPY\" = \"true\" ]; then
   CMD+=(\"--enable-rdma-zcopy\" \"--rdma-zcopy-listen\" \"$RDMA_ZCOPY_LISTEN\" \"--rdma-frame-payload\" \"$RDMA_FRAME_PAYLOAD\" \"--rdma-send-depth\" \"$RDMA_SEND_DEPTH\" \"--rdma-recv-depth\" \"$RDMA_RECV_DEPTH\" \"--rdma-inline-threshold\" \"$RDMA_INLINE_THRESHOLD\" \"--rdma-send-signal-interval\" \"$RDMA_SEND_SIGNAL_INTERVAL\")
   if [ \"$RDMA_LOWCPU\" = \"true\" ]; then
@@ -71,6 +79,12 @@ tail -n 20 '$REMOTE_LOG_FILE'
 echo
 echo "remote server started"
 echo "tcp endpoint:  http://$TCP_LISTEN"
+if [ -n "$PAYLOAD_ROOT" ]; then
+  echo "payload root: $PAYLOAD_ROOT"
+fi
+if [ -n "$CONTROL_GRPC_LISTEN" ]; then
+  echo "control grpc endpoint: $CONTROL_GRPC_LISTEN"
+fi
 if [ "$ENABLE_RDMA_ZCOPY" = "true" ]; then
   echo "rdma zcopy endpoint: $RDMA_ZCOPY_LISTEN"
 fi

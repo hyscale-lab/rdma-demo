@@ -1,4 +1,4 @@
-package main
+package zcopy
 
 import (
 	"context"
@@ -11,25 +11,32 @@ import (
 	"time"
 
 	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
-
 	"github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/zcopyproto"
+
+	"rdma-demo/server-client-demo/internal/inmems3/ingest"
+	"rdma-demo/server-client-demo/internal/inmems3/store"
 )
 
-type zcopyService struct {
+type ObjectStore interface {
+	CreateBucket(name string)
+	GetObject(bucket, key string) (store.Object, bool)
+}
+
+type Service struct {
 	listener      awsrdmahttp.MessageListener
-	store         *memoryStore
+	store         ObjectStore
 	maxObjectSize int64
 }
 
-func newZCopyService(listener awsrdmahttp.MessageListener, store *memoryStore, maxObjectSize int64) *zcopyService {
-	return &zcopyService{
+func NewService(listener awsrdmahttp.MessageListener, store ObjectStore, maxObjectSize int64) *Service {
+	return &Service{
 		listener:      listener,
 		store:         store,
 		maxObjectSize: maxObjectSize,
 	}
 }
 
-func (s *zcopyService) Serve() error {
+func (s *Service) Serve() error {
 	for {
 		conn, err := s.listener.AcceptMessage()
 		if err != nil {
@@ -39,7 +46,7 @@ func (s *zcopyService) Serve() error {
 	}
 }
 
-func (s *zcopyService) Close() error {
+func (s *Service) Close() error {
 	return s.listener.Close()
 }
 
@@ -184,15 +191,15 @@ func (zc *zcopyConn) recvControl() (zcopyproto.Message, error) {
 	return zcopyproto.Decode(payload)
 }
 
-func (zc *zcopyConn) recvPayloadAt(size int, sharedOffset int) ([]byte, error) {
+func (zc *zcopyConn) recvPayloadReceiptAt(size int, sharedOffset int) (ingest.Result, error) {
 	if size < 0 {
-		return nil, fmt.Errorf("zcopy: invalid payload size %d", size)
+		return ingest.Result{}, fmt.Errorf("zcopy: invalid payload size %d", size)
 	}
 	if sharedOffset < 0 {
-		return nil, fmt.Errorf("zcopy: invalid data_offset=%d", sharedOffset)
+		return ingest.Result{}, fmt.Errorf("zcopy: invalid data_offset=%d", sharedOffset)
 	}
 	if size == 0 {
-		return []byte{}, nil
+		return ingest.ResultForBytes(nil), nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -200,20 +207,20 @@ func (zc *zcopyConn) recvPayloadAt(size int, sharedOffset int) ([]byte, error) {
 
 	bmsg, err := zc.borrow.RecvBorrowedMessage(ctx)
 	if err != nil {
-		return nil, err
+		return ingest.Result{}, err
 	}
 	defer bmsg.Release()
 
 	if bmsg.SharedOffset != sharedOffset {
-		return nil, fmt.Errorf("zcopy: payload offset mismatch got=%d want=%d", bmsg.SharedOffset, sharedOffset)
+		return ingest.Result{}, fmt.Errorf("zcopy: payload offset mismatch got=%d want=%d", bmsg.SharedOffset, sharedOffset)
 	}
 	if len(bmsg.Payload) != size {
-		return nil, fmt.Errorf("zcopy: payload size mismatch got=%d want=%d", len(bmsg.Payload), size)
+		return ingest.Result{}, fmt.Errorf("zcopy: payload size mismatch got=%d want=%d", len(bmsg.Payload), size)
 	}
-	return append([]byte(nil), bmsg.Payload...), nil
+	return ingest.ResultForBytes(bmsg.Payload), nil
 }
 
-func (s *zcopyService) serveConn(conn awsrdmahttp.MessageConn) {
+func (s *Service) serveConn(conn awsrdmahttp.MessageConn) {
 	zc, err := newZCopyConn(conn)
 	if err != nil {
 		log.Printf("zcopy conn init failed: %v", err)
@@ -266,7 +273,7 @@ func (s *zcopyService) serveConn(conn awsrdmahttp.MessageConn) {
 				_ = zc.sendRespErr(msg.ReqID, "bucket must not be empty")
 				continue
 			}
-			s.store.createBucket(bucket)
+			s.store.CreateBucket(bucket)
 			if err := zc.sendRespOK(msg.ReqID); err != nil {
 				return
 			}
@@ -290,7 +297,7 @@ func (s *zcopyService) serveConn(conn awsrdmahttp.MessageConn) {
 	}
 }
 
-func (s *zcopyService) handlePut(zc *zcopyConn, msg zcopyproto.Message) error {
+func (s *Service) handlePut(zc *zcopyConn, msg zcopyproto.Message) error {
 	if msg.ReqID == 0 {
 		return zc.sendRespErr(0, "missing req_id")
 	}
@@ -309,17 +316,14 @@ func (s *zcopyService) handlePut(zc *zcopyConn, msg zcopyproto.Message) error {
 		return zc.sendRespErr(msg.ReqID, fmt.Sprintf("object too large: %d > %d", msg.Size, s.maxObjectSize))
 	}
 
-	payload, err := zc.recvPayloadAt(msg.Size, *msg.DataOffset)
-	if err != nil {
+	if _, err := zc.recvPayloadReceiptAt(msg.Size, *msg.DataOffset); err != nil {
 		return err
 	}
-	if _, err := s.store.putObject(bucket, key, payload); err != nil {
-		return zc.sendRespErr(msg.ReqID, err.Error())
-	}
+	s.store.CreateBucket(bucket)
 	return zc.sendRespOK(msg.ReqID)
 }
 
-func (s *zcopyService) handleGetAsync(zc *zcopyConn, msg zcopyproto.Message) error {
+func (s *Service) handleGetAsync(zc *zcopyConn, msg zcopyproto.Message) error {
 	if msg.ReqID == 0 {
 		return zc.sendRespErr(0, "missing req_id")
 	}
@@ -334,7 +338,7 @@ func (s *zcopyService) handleGetAsync(zc *zcopyConn, msg zcopyproto.Message) err
 	return nil
 }
 
-func (s *zcopyService) handleGet(zc *zcopyConn, msg zcopyproto.Message) error {
+func (s *Service) handleGet(zc *zcopyConn, msg zcopyproto.Message) error {
 	bucket := strings.TrimSpace(msg.Bucket)
 	key := strings.TrimSpace(msg.Key)
 	if bucket == "" || key == "" {
@@ -347,13 +351,13 @@ func (s *zcopyService) handleGet(zc *zcopyConn, msg zcopyproto.Message) error {
 		return zc.sendRespErr(msg.ReqID, "missing data_offset")
 	}
 
-	obj, ok := s.store.getObject(bucket, key)
+	obj, ok := s.store.GetObject(bucket, key)
 	if !ok {
 		return zc.sendRespErr(msg.ReqID, "key not found")
 	}
-	if msg.Max > 0 && len(obj.body) > msg.Max {
-		return zc.sendRespErr(msg.ReqID, fmt.Sprintf("object exceeds max=%d size=%d", msg.Max, len(obj.body)))
+	if msg.Max > 0 && len(obj.Body) > msg.Max {
+		return zc.sendRespErr(msg.ReqID, fmt.Sprintf("object exceeds max=%d size=%d", msg.Max, len(obj.Body)))
 	}
 
-	return zc.sendGetPayload(msg.ReqID, obj.body, *msg.DataOffset)
+	return zc.sendGetPayload(msg.ReqID, obj.Body, *msg.DataOffset)
 }
