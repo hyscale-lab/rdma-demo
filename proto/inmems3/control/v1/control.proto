@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package inmems3.control.v1;
+
+option go_package = "rdma-demo/server-client-demo/proto/inmems3/control/v1;controlv1";
+
+service ControlService {
+  rpc AddFolder(AddFolderRequest) returns (AddFolderResponse);
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse);
+  rpc ClearAll(ClearAllRequest) returns (ClearAllResponse);
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
+}
+
+message AddFolderRequest {
+  string path = 1;
+}
+
+message AddFolderResponse {
+  uint32 buckets_loaded = 1;
+  uint32 objects_loaded = 2;
+  uint64 bytes_loaded = 3;
+  repeated string buckets = 4;
+}
+
+message DeleteBucketRequest {
+  string bucket = 1;
+}
+
+message DeleteBucketResponse {
+  bool deleted = 1;
+}
+
+message ClearAllRequest {}
+
+message ClearAllResponse {
+  uint32 buckets_deleted = 1;
+}
+
+message ListBucketsRequest {}
+
+message ListBucketsResponse {
+  repeated string buckets = 1;
+}

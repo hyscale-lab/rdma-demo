@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Simple boto3 smoke test for the in-memory S3 server TCP endpoint."""
+"""Smoke test for the in-memory S3 server TCP endpoint.
+
+This verifies the current semantics:
+- PUT uploads are accepted but do not become readable objects.
+- Optional preloaded payload objects remain readable through GET/HEAD/list.
+"""
 
 import argparse
-import hashlib
-import os
 import sys
-import tempfile
 import time
 import uuid
-from pathlib import Path
 
 import boto3
 from botocore.config import Config
@@ -17,7 +18,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Run a basic create/put/get/list/delete smoke test via boto3 over TCP."
+        description="Run a boto3 smoke test for PUT-discard semantics and optional preloaded GET checks."
     )
     p.add_argument("--endpoint", default="http://10.0.1.2:10090", help="S3 endpoint URL")
     p.add_argument("--region", default="us-east-1", help="AWS region")
@@ -25,22 +26,35 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--secret-key", default="test", help="Secret key")
     p.add_argument("--bucket", default="", help="Bucket name (empty => auto-generate)")
     p.add_argument("--bucket-prefix", default="boto3-smoke", help="Auto bucket prefix")
-    p.add_argument("--key", default="smoke-object", help="Object key")
-    p.add_argument("--size", type=int, default=4096, help="Payload size in bytes")
+    p.add_argument("--key", default="smoke-put-object", help="PUT test object key")
+    p.add_argument("--size", type=int, default=4096, help="PUT payload size in bytes")
     p.add_argument(
-        "--random-file",
-        action="store_true",
-        help="Generate a random local file, upload it, download it, and verify file checksum",
+        "--payload-mode",
+        choices=("pattern", "zeros", "random"),
+        default="pattern",
+        help="PUT payload generation mode",
     )
     p.add_argument(
-        "--tmp-dir",
+        "--verify-preloaded-bucket",
         default="",
-        help="Directory for generated files in random-file mode (default: system temp dir)",
+        help="Optional bucket containing a preloaded payload object to read back",
     )
     p.add_argument(
-        "--keep-files",
-        action="store_true",
-        help="Keep generated local files in random-file mode",
+        "--verify-preloaded-key",
+        default="",
+        help="Optional preloaded object key to GET/HEAD/list",
+    )
+    p.add_argument(
+        "--verify-preloaded-size",
+        type=int,
+        default=-1,
+        help="Expected size for the optional preloaded object",
+    )
+    p.add_argument(
+        "--verify-preloaded-mode",
+        choices=("pattern", "zeros", "random"),
+        default="pattern",
+        help="Expected payload mode for the optional preloaded object",
     )
     p.add_argument("--no-cleanup", action="store_true", help="Keep object and bucket after test")
     return p.parse_args()
@@ -73,21 +87,30 @@ def maybe_create_bucket(s3, bucket: str, region: str) -> None:
     s3.create_bucket(**params)
 
 
-def sha256_path(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def make_payload(size: int, payload_mode: str) -> bytes:
+    if size < 0:
+        raise ValueError("size must be >= 0")
+    if payload_mode == "pattern":
+        return bytes((i * 31 + 7) & 0xFF for i in range(size))
+    if payload_mode == "zeros":
+        return b"\x00" * size
+    if payload_mode == "random":
+        import os
+
+        return os.urandom(size)
+    raise ValueError(f"invalid payload mode {payload_mode!r}")
 
 
-def write_random_file(path: Path, size: int) -> None:
-    remaining = size
-    with path.open("wb") as f:
-        while remaining > 0:
-            chunk = os.urandom(min(remaining, 1024 * 1024))
-            f.write(chunk)
-            remaining -= len(chunk)
+def expect_not_found(callable_name: str, fn) -> None:
+    try:
+        fn()
+    except ClientError as err:
+        status = err.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if status == 404:
+            print(f"   {callable_name}=404 as expected")
+            return
+        raise
+    raise RuntimeError(f"{callable_name} unexpectedly succeeded")
 
 
 def main() -> int:
@@ -95,15 +118,22 @@ def main() -> int:
     if args.size < 0:
         print("size must be >= 0", file=sys.stderr)
         return 2
+    if bool(args.verify_preloaded_bucket) != bool(args.verify_preloaded_key):
+        print(
+            "verify-preloaded-bucket and verify-preloaded-key must be set together",
+            file=sys.stderr,
+        )
+        return 2
+    if args.verify_preloaded_key and args.verify_preloaded_size < 0:
+        print("verify-preloaded-size must be >= 0 when verifying a preloaded object", file=sys.stderr)
+        return 2
 
     bucket = args.bucket or make_bucket_name(args.bucket_prefix)
     key = args.key
-    payload = bytes((i * 31 + 7) & 0xFF for i in range(args.size))
-    upload_path = None
-    download_path = None
+    payload = make_payload(args.size, args.payload_mode)
 
     print(f"endpoint={args.endpoint}")
-    print(f"bucket={bucket} key={key} size={args.size}")
+    print(f"bucket={bucket} key={key} size={args.size} mode={args.payload_mode}")
 
     s3 = build_client(args)
 
@@ -112,61 +142,57 @@ def main() -> int:
         maybe_create_bucket(s3, bucket, args.region)
 
         print("2) put_object")
-        if args.random_file:
-            tmp_base = Path(args.tmp_dir) if args.tmp_dir else Path(tempfile.gettempdir())
-            tmp_base.mkdir(parents=True, exist_ok=True)
-            stamp = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
-            upload_path = tmp_base / f"boto3-upload-{stamp}.bin"
-            download_path = tmp_base / f"boto3-download-{stamp}.bin"
-            write_random_file(upload_path, args.size)
-            with upload_path.open("rb") as f:
-                s3.put_object(Bucket=bucket, Key=key, Body=f, ContentLength=args.size)
-            print(f"   upload_file={upload_path}")
-        else:
-            s3.put_object(Bucket=bucket, Key=key, Body=payload, ContentLength=len(payload))
+        put_resp = s3.put_object(Bucket=bucket, Key=key, Body=payload, ContentLength=len(payload))
+        print(f"   etag={put_resp.get('ETag')}")
 
-        print("3) head_object")
-        head = s3.head_object(Bucket=bucket, Key=key)
-        print(f"   content_length={head.get('ContentLength')}")
+        print("3) uploaded object should not be readable later")
+        expect_not_found(
+            "head_object",
+            lambda: s3.head_object(Bucket=bucket, Key=key),
+        )
+        expect_not_found(
+            "get_object",
+            lambda: s3.get_object(Bucket=bucket, Key=key),
+        )
 
-        print("4) get_object")
-        out = s3.get_object(Bucket=bucket, Key=key)
-        data = out["Body"].read()
-        if args.random_file:
-            assert download_path is not None
-            with download_path.open("wb") as f:
-                f.write(data)
-            src_hash = sha256_path(upload_path)
-            dst_hash = sha256_path(download_path)
-            print(f"   upload_sha256={src_hash}")
-            print(f"   download_sha256={dst_hash}")
-            if src_hash != dst_hash:
-                print("file checksum mismatch", file=sys.stderr)
-                return 1
-        else:
-            if data != payload:
-                print("payload mismatch", file=sys.stderr)
-                return 1
-
-        print("5) list_objects_v2")
+        print("4) list_objects_v2 for uploaded key")
         listed = s3.list_objects_v2(Bucket=bucket, Prefix=key)
         count = listed.get("KeyCount", 0)
         print(f"   key_count={count}")
+        if count != 0:
+            print("expected uploaded key to be absent from list results", file=sys.stderr)
+            return 1
+
+        if args.verify_preloaded_key:
+            verify_bucket = args.verify_preloaded_bucket
+            verify_key = args.verify_preloaded_key
+            print("5) verify preloaded object")
+            head = s3.head_object(Bucket=verify_bucket, Key=verify_key)
+            remote_size = int(head.get("ContentLength", -1))
+            print(f"   content_length={remote_size}")
+            if remote_size != args.verify_preloaded_size:
+                print(
+                    f"preloaded size mismatch: remote={remote_size} expected={args.verify_preloaded_size}",
+                    file=sys.stderr,
+                )
+                return 1
+            out = s3.get_object(Bucket=verify_bucket, Key=verify_key)
+            data = out["Body"].read()
+            expected = make_payload(args.verify_preloaded_size, args.verify_preloaded_mode)
+            if data != expected:
+                print("preloaded payload mismatch", file=sys.stderr)
+                return 1
+            listed = s3.list_objects_v2(Bucket=verify_bucket, Prefix=verify_key)
+            print(f"   preloaded_key_count={listed.get('KeyCount', 0)}")
 
         if not args.no_cleanup:
-            print("6) cleanup delete_object/delete_bucket")
+            print("6) cleanup delete_bucket")
             s3.delete_object(Bucket=bucket, Key=key)
             s3.delete_bucket(Bucket=bucket)
 
-        if args.random_file and not args.keep_files:
-            if upload_path is not None and upload_path.exists():
-                upload_path.unlink()
-            if download_path is not None and download_path.exists():
-                download_path.unlink()
-
         print("smoke test passed")
         return 0
-    except (ClientError, BotoCoreError) as e:
+    except (ClientError, BotoCoreError, RuntimeError, ValueError) as e:
         print(f"smoke test failed: {e}", file=sys.stderr)
         return 1
 

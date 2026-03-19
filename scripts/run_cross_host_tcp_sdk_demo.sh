@@ -13,12 +13,14 @@ RDMA_ZCOPY_LISTEN="${RDMA_ZCOPY_LISTEN:-10.0.1.2:10191}"
 BUCKET="${BUCKET:-bench-bucket}"
 KEY_PREFIX="${KEY_PREFIX:-tcp-sdk-demo}"
 OBJECT_SIZE="${OBJECT_SIZE:-$((256*1024))}"
-OP="${OP:-get}"
+OP="${OP:-put}"
 WARMUP="${WARMUP:-100}"
 PREFILL="${PREFILL:-0}"
 S3_CLIENT_COUNT="${S3_CLIENT_COUNT:-140}"
 OPEN_LOOP_CLIENT_FANOUT="${OPEN_LOOP_CLIENT_FANOUT:-false}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-10s}"
+PAYLOAD_ROOT="${PAYLOAD_ROOT:-}"
+CONTROL_GRPC_LISTEN="${CONTROL_GRPC_LISTEN:-}"
 
 TARGET_RPS="${TARGET_RPS:-500}"
 DURATION="${DURATION:-20s}"
@@ -34,6 +36,12 @@ if [ "$TARGET_RPS" != "0" ] && [ "$TARGET_RPS" != "0.0" ] && [ "$DURATION" = "0s
   exit 1
 fi
 
+if [ "$OP" = "get" ] && [ "$PREPARE_REMOTE_SERVER" = "true" ] && [ -z "$PAYLOAD_ROOT" ]; then
+  echo "OP=get requires readable payload objects on the server." >&2
+  echo "Set PAYLOAD_ROOT for deploy-time preload, or preload payloads separately before running with PREPARE_REMOTE_SERVER=false." >&2
+  exit 1
+fi
+
 if [ "$PREPARE_REMOTE_SERVER" = "true" ]; then
   echo "deploy remote server for tcp sdk benchmark"
   (
@@ -42,6 +50,8 @@ if [ "$PREPARE_REMOTE_SERVER" = "true" ]; then
     ENABLE_RDMA_ZCOPY="$ENABLE_RDMA_ZCOPY" \
     RDMA_ZCOPY_LISTEN="$RDMA_ZCOPY_LISTEN" \
     TCP_LISTEN="$TCP_LISTEN" \
+    PAYLOAD_ROOT="$PAYLOAD_ROOT" \
+    CONTROL_GRPC_LISTEN="$CONTROL_GRPC_LISTEN" \
     REMOTE="$REMOTE" \
     ./scripts/deploy_remote_server.sh
   )
@@ -56,6 +66,10 @@ echo "run local tcp sdk benchmark"
   echo "building bench client"
   mkdir -p "$BIN_DIR"
   CGO_ENABLED=1 go build -tags rdma -o "$BENCH_BIN" ./cmd/bench-client
+
+  if [ "$OP" = "get" ]; then
+    echo "note: GET mode expects preloaded payload objects matching ${KEY_PREFIX}-00000000 .."
+  fi
 
   cmd=(
     "$BENCH_BIN"
