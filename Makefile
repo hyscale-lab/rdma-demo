@@ -1,1 +1,1 @@
-sudo apt install -y libnuma-dev  libibverbs-dev rdma-core librdmacm-dev
+sudo apt install -y libnuma-dev libibverbs-dev rdma-core librdmacm-dev

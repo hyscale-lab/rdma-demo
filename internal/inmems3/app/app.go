@@ -5,11 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +24,13 @@ import (
 	"rdma-demo/server-client-demo/internal/inmems3/s3api"
 	"rdma-demo/server-client-demo/internal/inmems3/store"
 	"rdma-demo/server-client-demo/internal/inmems3/zcopy"
+)
+
+const (
+	defaultTCPListen       = "127.0.0.1:10090"
+	defaultRDMAZCopyListen = "127.0.0.1:10191"
+	defaultRegion          = "us-east-1"
+	defaultMaxObjectSize   = 64 << 20
 )
 
 type Config struct {
@@ -51,14 +61,24 @@ type runningServer struct {
 
 func DefaultConfig() Config {
 	return Config{
-		TCPListen:        "127.0.0.1:10090",
-		RDMAZCopyListen:  "127.0.0.1:10191",
+		TCPListen:        defaultTCPListen,
+		RDMAZCopyListen:  defaultRDMAZCopyListen,
 		RDMABacklog:      awsrdmahttp.DefaultVerbsListenBacklog,
 		RDMAWorkers:      awsrdmahttp.DefaultVerbsAcceptWorkers,
-		Region:           "us-east-1",
-		MaxObjectSize:    64 << 20,
+		Region:           defaultRegion,
+		MaxObjectSize:    defaultMaxObjectSize,
 		StoreEvictPolicy: string(store.EvictPolicyReject),
 	}
+}
+
+func NewFlagSet(name string, output io.Writer, cfg *Config) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(output)
+	cfg.RegisterFlags(fs)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), cfg.UsageText(name))
+	}
+	return fs
 }
 
 func (c *Config) RegisterFlags(fs *flag.FlagSet) {
@@ -81,12 +101,91 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ControlGRPCListen, "control-grpc-listen", c.ControlGRPCListen, "optional gRPC control-plane listen address")
 }
 
-func Run(cfg Config) error {
-	if cfg.TCPListen == "" && !cfg.EnableRDMAZCopy {
-		return fmt.Errorf("at least one listener must be enabled")
+func (c Config) UsageText(name string) string {
+	if name == "" {
+		name = "inmem-s3-server"
 	}
-	if cfg.StoreMaxBytes < 0 {
+	name = filepath.Base(name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Usage:\n  %s [flags]\n\n", name)
+	b.WriteString("S3-compatible in-memory benchmark server.\n")
+	b.WriteString("GET/HEAD/list read from the preloaded payload store. PUT validates uploads and discards their payload bytes.\n\n")
+	b.WriteString("Data listeners (enable at least one):\n")
+	fmt.Fprintf(&b, "  --tcp-listen addr\n        HTTP/S3 listener address. Default: %s. Empty disables TCP.\n", c.TCPListen)
+	fmt.Fprintf(&b, "  --enable-rdma-zcopy\n        Enable the RDMA zcopy listener. Default: %t.\n", c.EnableRDMAZCopy)
+	fmt.Fprintf(&b, "  --rdma-zcopy-listen addr\n        RDMA zcopy listener address when RDMA is enabled. Default: %s.\n\n", c.RDMAZCopyListen)
+	b.WriteString("General behavior:\n")
+	fmt.Fprintf(&b, "  --region string\n        Region returned by the S3-compatible APIs. Default: %s.\n", c.Region)
+	fmt.Fprintf(&b, "  --max-object-size bytes\n        Per-upload size limit. Default: %d. Values <= 0 disable the limit.\n", c.MaxObjectSize)
+	b.WriteString("  --payload-root path\n        Optional startup preload directory. Top-level folders become buckets and nested files become object keys.\n")
+	b.WriteString("  --control-grpc-listen addr\n        Optional gRPC control-plane listener for AddFolder/ListBuckets/DeleteBucket/ClearAll. Empty disables it.\n\n")
+	b.WriteString("In-memory payload store:\n")
+	fmt.Fprintf(&b, "  --store-max-bytes bytes\n        Resident-byte limit for GET payloads. Default: %d (unlimited).\n", c.StoreMaxBytes)
+	fmt.Fprintf(&b, "  --store-evict-policy string\n        Store-full behavior. Supported values: %s, %s. Default: %s.\n\n", store.EvictPolicyReject, store.EvictPolicyFIFO, c.StoreEvictPolicy)
+	b.WriteString("RDMA tuning:\n")
+	fmt.Fprintf(&b, "  --rdma-backlog int\n        RDMA CM listen backlog. Default: %d. A value of 0 uses the RDMA library default.\n", c.RDMABacklog)
+	fmt.Fprintf(&b, "  --rdma-accept-workers int\n        Concurrent RDMA accept workers. Default: %d. A value <= 0 uses the RDMA library default.\n", c.RDMAWorkers)
+	fmt.Fprintf(&b, "  --rdma-frame-payload int\n        RDMA frame payload size in bytes. Default: 0 (library default %d).\n", awsrdmahttp.DefaultVerbsFramePayloadSize)
+	fmt.Fprintf(&b, "  --rdma-send-depth int\n        RDMA send queue depth. Default: 0 (library default %d).\n", awsrdmahttp.DefaultVerbsSendQueueDepth)
+	fmt.Fprintf(&b, "  --rdma-recv-depth int\n        RDMA recv queue depth. Default: 0 (library default %d).\n", awsrdmahttp.DefaultVerbsRecvQueueDepth)
+	fmt.Fprintf(&b, "  --rdma-inline-threshold int\n        RDMA inline-send threshold in bytes. Default: 0 (library default %d).\n", awsrdmahttp.DefaultVerbsInlineThreshold)
+	b.WriteString("  --rdma-lowcpu\n        Prefer fewer RDMA completion signals when send signal interval is left at 0.\n")
+	fmt.Fprintf(&b, "  --rdma-send-signal-interval int\n        RDMA send completion interval. Default: 0 (library default %d, or %d with --rdma-lowcpu).\n", awsrdmahttp.DefaultVerbsSendSignalInterval, awsrdmahttp.DefaultVerbsLowCPUSendSignalInterval)
+	return b.String()
+}
+
+func (c Config) normalized() Config {
+	defaults := DefaultConfig()
+	if c.EnableRDMAZCopy && c.RDMAZCopyListen == "" {
+		c.RDMAZCopyListen = defaults.RDMAZCopyListen
+	}
+	return c
+}
+
+func (c Config) Validate() error {
+	if c.TCPListen == "" && !c.EnableRDMAZCopy {
+		return fmt.Errorf("at least one data listener must be enabled via --tcp-listen or --enable-rdma-zcopy")
+	}
+	if strings.TrimSpace(c.Region) == "" {
+		return fmt.Errorf("region must not be empty")
+	}
+	if c.EnableRDMAZCopy && c.RDMAZCopyListen == "" {
+		return fmt.Errorf("rdma-zcopy-listen must not be empty when --enable-rdma-zcopy is set")
+	}
+	if c.RDMABacklog < 0 {
+		return fmt.Errorf("rdma-backlog must be >= 0")
+	}
+	if c.RDMAWorkers < 0 {
+		return fmt.Errorf("rdma-accept-workers must be >= 0")
+	}
+	if c.RDMAFramePayload < 0 {
+		return fmt.Errorf("rdma-frame-payload must be >= 0")
+	}
+	if c.RDMASendDepth < 0 {
+		return fmt.Errorf("rdma-send-depth must be >= 0")
+	}
+	if c.RDMARecvDepth < 0 {
+		return fmt.Errorf("rdma-recv-depth must be >= 0")
+	}
+	if c.RDMAInline < 0 {
+		return fmt.Errorf("rdma-inline-threshold must be >= 0")
+	}
+	if c.RDMASignalIntvl < 0 {
+		return fmt.Errorf("rdma-send-signal-interval must be >= 0")
+	}
+	if c.StoreMaxBytes < 0 {
 		return fmt.Errorf("store-max-bytes must be >= 0")
+	}
+	if _, err := store.ParseEvictPolicy(c.StoreEvictPolicy); err != nil {
+		return err
+	}
+	return nil
+}
+
+func Run(cfg Config) error {
+	cfg = cfg.normalized()
+	if err := cfg.Validate(); err != nil {
+		return err
 	}
 
 	evictPolicy, err := store.ParseEvictPolicy(cfg.StoreEvictPolicy)

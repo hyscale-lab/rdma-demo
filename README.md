@@ -30,6 +30,10 @@ Example mapping:
   - `-tags rdma`
   - libraries: `librdmacm`, `libibverbs`
 
+## Config Reference
+
+For a complete description of every server flag, its default, and recommended launch profiles, see [docs/inmem-s3-server-config.md](/users/nehalem/rdma-demo/docs/inmem-s3-server-config.md).
+
 ## Important Flags
 
 - `--payload-root`: preload a local payload tree into the in-memory GET store at startup
@@ -64,6 +68,12 @@ go run ./cmd/inmem-s3-server \
   --tcp-listen 127.0.0.1:10090 \
   --payload-root ./payload-root \
   --control-grpc-listen 127.0.0.1:19090
+```
+
+You can also inspect the grouped CLI help directly:
+
+```bash
+go run ./cmd/inmem-s3-server --help
 ```
 
 4. Run the TCP smoke test

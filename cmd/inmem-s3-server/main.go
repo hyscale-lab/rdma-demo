@@ -1,16 +1,23 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"log"
+	"os"
 
 	"rdma-demo/server-client-demo/internal/inmems3/app"
 )
 
 func main() {
 	cfg := app.DefaultConfig()
-	cfg.RegisterFlags(flag.CommandLine)
-	flag.Parse()
+	fs := app.NewFlagSet(os.Args[0], os.Stderr, &cfg)
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		log.Fatal(err)
+	}
 
 	if err := app.Run(cfg); err != nil {
 		log.Fatal(err)
