@@ -247,3 +247,216 @@ Make `cmd/inmem-s3-server` easier to launch as a standalone binary from another 
   `CGO_ENABLED=1 go test -tags rdma ./...` passed.
   `go build ./cmd/inmem-s3-server` passed.
   `go build ./cmd/...` passed.
+
+# `s3-rdma-server` Rebuild
+
+## Goal
+
+Build a new, standalone `s3-rdma-server` that is intentionally smaller than `inmem-s3-server`, keeps the minimal in-memory benchmark semantics, supports both TCP and RDMA zcopy, discards all client PUT payloads after validation, and only keeps startup-loaded GET objects in memory.
+
+## Acceptance Criteria
+
+- The new implementation lives under `cmd/s3-rdma-server`, `internal/s3rdmaserver`, `pkg/s3rdmasmoke`, and `cmd/s3-rdma-smoke`.
+- The new server does not import `internal/inmems3/*` or reference `inmem-s3-server` in names, docs, or package paths.
+- TCP keeps the current minimal S3-compatible benchmark behavior.
+- RDMA implements only the zcopy protocol needed by the modified `aws-sdk-go-v2` in this repo.
+- PUT succeeds after validation and payload receipt, then discards the object body on both TCP and RDMA.
+- GET/HEAD/list read only from startup-loaded `--payload-root` data.
+- The binary runs as a standalone CLI process suitable for tmux.
+- A combined smoke tool can validate both TCP and RDMA behavior.
+
+## Working Notes
+
+- `cmd/s3-rdma-server/main.go` currently exists only as a stub with comments indicating that real config constants and flag parsing should be added there.
+- User explicitly wants this implementation to be isolated enough to move to a separate repository later.
+- User explicitly wants review and approval after every step in the implementation plan.
+- Step 1 is docs only: create the spec first and the design diagrams second, then stop.
+- The chosen product decisions are:
+  startup-only `--payload-root`
+  no runtime admin or control API
+  no object retention for PUT
+  one combined smoke tool for both TCP and RDMA
+
+## Proposed Steps
+
+- [x] Step 1: Create the `s3-rdma-server` project spec and architecture diagrams.
+- [x] Step 2: Build the new project skeleton and CLI contract.
+- [x] Step 3: Implement the simple in-memory GET store and startup loader.
+- [x] Step 4: Implement the minimal S3/TCP handler.
+- [x] Step 5: Implement the RDMA zcopy service compatible with the current SDK.
+- [x] Step 6: Wire the standalone app lifecycle and CLI behavior.
+- [x] Step 7: Add the combined TCP + RDMA smoke tool.
+- [x] Step 8: Run final verification and repo cleanup.
+
+## Results
+
+- Step 1 completed.
+- Added the implementation spec in:
+  [agent/specs/s3-rdma-server.md](/users/nehalem/rdma-demo/agent/specs/s3-rdma-server.md)
+- Added the architecture and flow diagrams in:
+  [docs/s3-rdma-server-architecture.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-architecture.md)
+- Step 1 verification:
+  document review only
+  no code or behavior changes beyond the spec and design artifacts
+- Step 2 completed.
+- Added the new standalone entrypoint in:
+  [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go)
+- Added the new app-level runtime/config skeleton in:
+  [internal/s3rdmaserver/app/app.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/app/app.go)
+- Added the package skeleton files in:
+  [internal/s3rdmaserver/store/store.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/store/store.go)
+  [internal/s3rdmaserver/s3api/handler.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/s3api/handler.go)
+  [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go)
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+- Step 2 behavior:
+  the new binary now has its own flag surface, grouped `--help`, and RDMA tuning defaults
+  the CLI uses plain `flag.Bool` / `flag.String` / `flag.Parse()` in `cmd/s3-rdma-server/main.go`, and the flag defaults now live there instead of in `app`
+  the app layer is intentionally still a skeleton and only handles config validation plus startup logging
+  no `internal/inmems3/*` package is imported by the new `s3-rdma-server` path
+- Step 2 verification:
+  `gofmt -w cmd/s3-rdma-server/main.go internal/s3rdmaserver/app/app.go internal/s3rdmaserver/store/store.go internal/s3rdmaserver/s3api/handler.go internal/s3rdmaserver/zcopy/service.go pkg/s3rdmasmoke/smoke.go` passed.
+  `go build ./cmd/s3-rdma-server` passed.
+  `go run ./cmd/s3-rdma-server --help` printed the grouped CLI help text.
+- Step 2 note:
+  `go build ./cmd/s3-rdma-server` created an untracked workspace-local binary named `s3-rdma-server`.
+- Step 3 completed.
+- Added the minimal GET object store in:
+  [internal/s3rdmaserver/store/store.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/store/store.go)
+- Added the startup payload-root loader in:
+  [internal/s3rdmaserver/store/loader.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/store/loader.go)
+- Added focused Step 3 unit tests in:
+  [internal/s3rdmaserver/store/store_test.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/store/store_test.go)
+  [internal/s3rdmaserver/store/loader_test.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/store/loader_test.go)
+- Step 3 behavior:
+  startup-loaded objects now store body bytes, ETag, and LastModified in a simple bucket/object map
+  bucket listing and object listing are sorted for stable output
+  the loader maps top-level directories to buckets and nested files to slash-normalized object keys
+  non-directory entries under the payload root are ignored
+  invalid or empty payload roots fail fast in the loader
+- Step 3 verification:
+  `gofmt -w internal/s3rdmaserver/store/store.go internal/s3rdmaserver/store/loader.go internal/s3rdmaserver/store/store_test.go internal/s3rdmaserver/store/loader_test.go` passed.
+  `go test ./internal/s3rdmaserver/store` passed.
+  `go build ./cmd/s3-rdma-server` passed.
+- Step 4 completed.
+- Added the minimal S3/TCP handler in:
+  [internal/s3rdmaserver/s3api/handler.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/s3api/handler.go)
+- Added focused Step 4 handler tests in:
+  [internal/s3rdmaserver/s3api/handler_test.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/s3api/handler_test.go)
+- Step 4 behavior:
+  bucket-level PUT, HEAD, GET list, DELETE, and root bucket listing are now implemented
+  object-level PUT, GET, HEAD, and DELETE are now implemented
+  HTTP PUT streams the request body, computes the response ETag, enforces `max-object-size`, creates the bucket if needed, and discards the payload
+  GET, HEAD, and list read only from the startup-loaded store
+  the handler returns S3-style XML errors and request-id headers like the current benchmark server
+- Step 4 verification:
+  `gofmt -w internal/s3rdmaserver/s3api/handler.go internal/s3rdmaserver/s3api/handler_test.go` passed.
+  `go test ./internal/s3rdmaserver/s3api` passed.
+  `go build ./cmd/s3-rdma-server` passed.
+- Step 5 completed.
+- Added the standalone RDMA zcopy service in:
+  [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go)
+- Added focused Step 5 zcopy tests in:
+  [internal/s3rdmaserver/zcopy/service_test.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service_test.go)
+- Step 5 behavior:
+  the new service now implements the `HelloReq`, `HelloResp`, `Ack`, `EnsureBucketReq`, `PutReq`, `GetReq`, `GetMeta`, `RespOK`, and `RespErr` control flow expected by the local `s3rdmaclient`
+  RDMA PUT validates the request, receives the borrowed payload at the requested shared-memory offset, creates the bucket if needed, and discards the uploaded object body instead of retaining it
+  RDMA GET reads only from the startup-loaded in-memory store, enforces the requested `max` size, sends `GetMeta`, and then sends the payload at the requested shared-memory offset
+  the zcopy connection now preserves already-granted GET credits during shutdown so an in-flight async GET can finish cleanly before the connection closes
+- Step 5 verification:
+  `gofmt -w internal/s3rdmaserver/zcopy/service.go internal/s3rdmaserver/zcopy/service_test.go` passed.
+  `go test ./internal/s3rdmaserver/zcopy` passed.
+  `go test ./...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  `go build ./cmd/s3-rdma-server` passed.
+- Step 5 focused protocol coverage:
+  direct zcopy unit tests now prove PUT returns `RespOK` without storing uploaded objects
+  direct zcopy unit tests now prove PUT does not overwrite preloaded GET objects
+  direct zcopy unit tests now prove GET sends `GetMeta` plus payload at the requested shared-memory offset
+  an end-to-end `serveConn` fake-transport test now proves the `HelloReq` -> `EnsureBucketReq` -> `PutReq` -> `GetReq` control flow in one connection sequence
+- Step 6 completed.
+- Replaced the Step 2 runtime skeleton in:
+  [internal/s3rdmaserver/app/app.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/app/app.go)
+- Added the standalone run/ops notes in:
+  [docs/s3-rdma-server-operations.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-operations.md)
+- Step 6 behavior:
+  the standalone binary now preloads `--payload-root` before opening listeners
+  TCP starts when `--tcp-listen` is non-empty and uses the new minimal S3 handler
+  RDMA zcopy starts only when `--enable-rdma-zcopy` is set and uses the new standalone zcopy service
+  the process listens for `SIGINT` and `SIGTERM`, logs the shutdown reason, and closes listeners cleanly
+  startup logs now include the effective runtime config plus the actual bound listener addresses, which works well for tmux-managed launches
+- Step 6 verification:
+  `gofmt -w internal/s3rdmaserver/app/app.go` passed.
+  `gofmt -w cmd/s3-rdma-server/main.go` passed.
+  `go test ./...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  `go build ./cmd/...` passed.
+  `go build ./cmd/s3-rdma-server` passed.
+  `go run ./cmd/s3-rdma-server --help` passed and now reports the actual RDMA flag defaults.
+  standalone runtime smoke passed:
+  `./s3-rdma-server --tcp-listen 127.0.0.1:0`
+  then `SIGINT` produced a clean `shutdown requested` log and exit code `0`
+  tmux runtime smoke passed with the documented launch pattern in `docs/s3-rdma-server-operations.md`
+  startup under tmux showed a bound TCP listener address and `tmux send-keys ... C-c` produced a clean shutdown log in the preserved pane
+- Step 7 completed.
+- Added the shared smoke library in:
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+- Added focused Step 7 smoke-tool tests in:
+  [pkg/s3rdmasmoke/smoke_test.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke_test.go)
+- Added the standalone smoke CLI in:
+  [cmd/s3-rdma-smoke/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-smoke/main.go)
+- Added the smoke usage notes in:
+  [docs/s3-rdma-smoke.md](/users/nehalem/rdma-demo/docs/s3-rdma-smoke.md)
+- Step 7 behavior:
+  `s3-rdma-smoke` now supports `--transport=tcp|rdma`, `--op=put|get|put-get`, shared common flags, and RDMA-specific shared-memory plus tuning flags
+  the TCP path uses the standard S3 client against the standalone server's minimal S3 API
+  the RDMA path uses `s3rdmaclient` with an mmap-backed shared-memory region and the standalone zcopy protocol
+  `put-get` now verifies the intended benchmark semantic that uploaded objects are accepted and then unreadable because the server discards them
+  `get` now verifies the startup-loaded readable object path for both transports
+- Step 7 verification:
+  `gofmt -w pkg/s3rdmasmoke/smoke.go pkg/s3rdmasmoke/smoke_test.go cmd/s3-rdma-smoke/main.go` passed.
+  `go test ./pkg/s3rdmasmoke ./...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  `go build ./cmd/s3-rdma-smoke ./cmd/s3-rdma-server` passed.
+  `go build ./cmd/...` passed.
+  live TCP smoke passed with:
+  `/tmp/s3-rdma-smoke-rdma --transport tcp --endpoint http://127.0.0.1:10090 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7`
+  `/tmp/s3-rdma-smoke-rdma --transport tcp --endpoint http://127.0.0.1:10090 --bucket smoke-bucket --key tcp-putget.bin --op put-get --payload-size 1024`
+  live RDMA smoke passed after retrying on an active RDMA interface address instead of loopback:
+  `/tmp/s3-rdma-smoke-rdma --transport rdma --endpoint 10.0.1.1:10191 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7`
+  `/tmp/s3-rdma-smoke-rdma --transport rdma --endpoint 10.0.1.1:10191 --bucket smoke-bucket --key rdma-putget.bin --op put-get --payload-size 1024`
+  live RDMA binaries for manual verification were built with:
+  `CGO_ENABLED=1 go build -tags rdma -o /tmp/s3-rdma-server-rdma ./cmd/s3-rdma-server`
+  `CGO_ENABLED=1 go build -tags rdma -o /tmp/s3-rdma-smoke-rdma ./cmd/s3-rdma-smoke`
+  the first live RDMA attempt on `127.0.0.1:10191` failed with route-resolution errors, which was an environment/addressing issue rather than a smoke-tool logic failure
+- Step 8 completed.
+- Updated the top-level docs to center the standalone deliverable:
+  [README.md](/users/nehalem/rdma-demo/README.md)
+  [docs/s3-rdma-server-config.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-config.md)
+  [docs/s3-rdma-server-operations.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-operations.md)
+  [docs/s3-rdma-smoke.md](/users/nehalem/rdma-demo/docs/s3-rdma-smoke.md)
+- Step 8 behavior and cleanup:
+  the top-level README now documents only the standalone `s3-rdma-server` and `s3-rdma-smoke` workflow instead of the older `inmem-s3-server` control-plane flow
+  the new config reference documents every standalone server flag and its practical use
+  the operations and smoke docs now call out that live RDMA should use an active RDMA-backed interface address instead of loopback
+  the temporary verification payload tree `.tmp-s3-rdma-smoke` and the untracked root-level `s3-rdma-server` build artifact were removed from the repo worktree
+- Step 8 verification:
+  `gofmt -w cmd/s3-rdma-server/main.go cmd/s3-rdma-smoke/main.go` passed.
+  `go test ./...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  `go build ./cmd/...` passed.
+  `go run ./cmd/s3-rdma-server --help` passed.
+  `go run ./cmd/s3-rdma-smoke --help` passed.
+  RDMA-enabled binaries for final live verification were built with:
+  `CGO_ENABLED=1 go build -tags rdma -o /tmp/s3-rdma-server-rdma ./cmd/s3-rdma-server`
+  `CGO_ENABLED=1 go build -tags rdma -o /tmp/s3-rdma-smoke-rdma ./cmd/s3-rdma-smoke`
+  final manual startup with `--payload-root` passed on fresh ports:
+  `/tmp/s3-rdma-server-rdma --tcp-listen 127.0.0.1:10091 --enable-rdma-zcopy --rdma-zcopy-listen 10.0.1.1:10192 --payload-root /users/nehalem/rdma-demo/.tmp-s3-rdma-smoke`
+  final manual TCP smoke passed with:
+  `/tmp/s3-rdma-smoke-rdma --transport tcp --endpoint http://127.0.0.1:10091 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7`
+  final manual RDMA smoke passed with:
+  `/tmp/s3-rdma-smoke-rdma --transport rdma --endpoint 10.0.1.1:10192 --bucket smoke-bucket --key rdma-putget-final.bin --op put-get --payload-size 1024`
+  the final live server shut down cleanly on `SIGINT`
+
+## Current Focus
+
+- [x] Rebuild plan complete.
