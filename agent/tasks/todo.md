@@ -191,3 +191,59 @@ Change PUT semantics so uploaded payloads are received and validated, but not re
   confirmed a preloaded GET returned `200`
   confirmed a new PUT returned `200`
   confirmed GET on that uploaded key returned `404`
+
+# Server Flag Handling And Config Documentation
+
+## Goal
+
+Make `cmd/inmem-s3-server` easier to launch as a standalone binary from another Go program, including tmux-based orchestration, by tightening its CLI flag handling and adding a dedicated reference for every supported config knob.
+
+## Acceptance Criteria
+
+- `inmem-s3-server --help` clearly explains the available listeners, defaults, and which flags are optional or disabled by default.
+- Config validation rejects obviously bad values with actionable errors before the server starts listening.
+- RDMA-related flags document when `0` means "use library default" versus when a value is required.
+- The repo has a dedicated config reference that explains each server flag, its default, and when to set it.
+- README points readers to the dedicated config reference and includes at least one launch example suitable for binary-orchestrated deployment.
+- Verification covers the updated config/flag surface plus the normal Go test/build path.
+
+## Working Notes
+
+- The current binary uses the standard library `flag` package directly from [main.go](/users/nehalem/rdma-demo/cmd/inmem-s3-server/main.go) with no custom usage output.
+- Defaults currently exist in [app.go](/users/nehalem/rdma-demo/internal/inmems3/app/app.go), but the intent of several zero values is only implied in code comments or README examples.
+- This follow-up should stay narrowly focused on CLI ergonomics and documentation rather than changing the server's transport or object semantics.
+
+## Proposed Tasks
+
+- [x] Task A: Add explicit config normalization, validation, and clearer help/usage output for `cmd/inmem-s3-server`.
+- [x] Task B: Add a dedicated server configuration reference and update README entrypoints/examples.
+- [x] Task C: Run tests/builds, verify the help output, and record results.
+
+## Results
+
+- Added a dedicated flag/config surface in:
+  [internal/inmems3/app/app.go](/users/nehalem/rdma-demo/internal/inmems3/app/app.go)
+  [cmd/inmem-s3-server/main.go](/users/nehalem/rdma-demo/cmd/inmem-s3-server/main.go)
+- The server binary now:
+  prints grouped `--help` output
+  validates bad config values before starting listeners
+  normalizes the RDMA listen address when RDMA is enabled but the address was left unset programmatically
+  keeps the help banner stable when launched through `go run` by showing the binary basename instead of a temp build path
+- Added focused config/CLI tests in:
+  [internal/inmems3/app/app_test.go](/users/nehalem/rdma-demo/internal/inmems3/app/app_test.go)
+- Added a dedicated operator-facing config reference in:
+  [docs/inmem-s3-server-config.md](/users/nehalem/rdma-demo/docs/inmem-s3-server-config.md)
+- Updated the top-level entry docs in:
+  [README.md](/users/nehalem/rdma-demo/README.md)
+- Documentation now covers:
+  every runtime flag
+  defaults and zero-value semantics
+  recommended launch profiles
+  tmux-oriented binary launching
+- Verification:
+  `go test ./internal/inmems3/app` passed.
+  `go run ./cmd/inmem-s3-server --help` printed the new grouped help text.
+  `go test ./...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  `go build ./cmd/inmem-s3-server` passed.
+  `go build ./cmd/...` passed.
