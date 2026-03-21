@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
 
-	"github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient"
+	"github.com/hyscale-lab/rdma-demo/rdma/client"
 )
 
 type demoClient struct {

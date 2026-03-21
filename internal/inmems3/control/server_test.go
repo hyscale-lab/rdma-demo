@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"rdma-demo/server-client-demo/internal/inmems3/payload"
-	"rdma-demo/server-client-demo/internal/inmems3/store"
-	controlv1 "rdma-demo/server-client-demo/proto/inmems3/control/v1"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/payload"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/store"
+	controlv1 "github.com/hyscale-lab/rdma-demo/proto/inmems3/control/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

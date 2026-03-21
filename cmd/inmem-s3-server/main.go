@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"rdma-demo/server-client-demo/internal/inmems3/app"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/app"
 )
 
 func main() {

@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rdma-demo/server-client-demo/internal/inmems3/ingest"
-	"rdma-demo/server-client-demo/internal/inmems3/store"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/ingest"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/store"
 )
 
 const xmlNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"

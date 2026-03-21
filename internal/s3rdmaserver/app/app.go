@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
 	log "github.com/sirupsen/logrus"
 
-	"rdma-demo/server-client-demo/internal/s3rdmaserver/s3api"
-	"rdma-demo/server-client-demo/internal/s3rdmaserver/store"
-	"rdma-demo/server-client-demo/internal/s3rdmaserver/zcopy"
+	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/s3api"
+	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/store"
+	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/zcopy"
 )
 
 // Config owns the standalone s3-rdma-server runtime inputs after CLI parsing.

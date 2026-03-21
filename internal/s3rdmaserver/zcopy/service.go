@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
-	"github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/zcopyproto"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
+	"github.com/hyscale-lab/rdma-demo/rdma/zcopyproto"
 	log "github.com/sirupsen/logrus"
 
-	"rdma-demo/server-client-demo/internal/s3rdmaserver/store"
+	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/store"
 )
 
 // ObjectStore is the minimal readable state the zcopy service needs.

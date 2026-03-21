@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"rdma-demo/server-client-demo/internal/s3rdmaserver/store"
+	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/store"
 )
 
 const (

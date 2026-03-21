@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"rdma-demo/server-client-demo/internal/inmems3/ingest"
-	"rdma-demo/server-client-demo/internal/inmems3/store"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/ingest"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/store"
 )
 
 func TestHandlerPutReturnsETagAndDoesNotCreateReadableObject(t *testing.T) {
