@@ -3,14 +3,14 @@ module github.com/hyscale-lab/rdma-demo
 go 1.26.1
 
 // replace github.com/aws/aws-sdk-go-v2 => ./aws-sdk-go-v2
-replace github.com/hyscale-lab/rdma-demo/rdma => ./pkg/rdma
+replace github.com/hyscale-lab/rdma-demo/pkg/rdma => ./pkg/rdma
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.4
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.1
 	github.com/aws/smithy-go v1.24.2
-	github.com/hyscale-lab/rdma-demo/rdma v0.0.0-20260321103955-629852f5d33c
+	github.com/hyscale-lab/rdma-demo/pkg/rdma v0.0.0-00010101000000-000000000000
 	github.com/sirupsen/logrus v1.9.4
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.10

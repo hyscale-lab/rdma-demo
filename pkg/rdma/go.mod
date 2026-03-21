@@ -1,4 +1,4 @@
-module github.com/hyscale-lab/rdma-demo/rdma
+module github.com/hyscale-lab/rdma-demo/pkg/rdma
 
 go 1.26.1
 

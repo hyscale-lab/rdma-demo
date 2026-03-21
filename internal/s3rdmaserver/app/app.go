@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/pkg/rdma"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/s3api"

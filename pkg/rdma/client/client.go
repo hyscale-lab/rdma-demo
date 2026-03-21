@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	rdma "github.com/hyscale-lab/rdma-demo/rdma"
-	"github.com/hyscale-lab/rdma-demo/rdma/zcopyproto"
+	rdma "github.com/hyscale-lab/rdma-demo/pkg/rdma"
+	"github.com/hyscale-lab/rdma-demo/pkg/rdma/zcopyproto"
 )
 
 const (

@@ -914,11 +914,11 @@ Resolve all broken imports after moving the RDMA code out of the local AWS SDK o
 
 - Updated stale RDMA imports from the old AWS SDK path to the relocated module:
   `github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma`
-  -> `github.com/hyscale-lab/rdma-demo/rdma`
+  -> `github.com/hyscale-lab/rdma-demo/pkg/rdma`
   `github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient`
-  -> `github.com/hyscale-lab/rdma-demo/rdma/client`
+  -> `github.com/hyscale-lab/rdma-demo/pkg/rdma/client`
   `github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/zcopyproto`
-  -> `github.com/hyscale-lab/rdma-demo/rdma/zcopyproto`
+  -> `github.com/hyscale-lab/rdma-demo/pkg/rdma/zcopyproto`
 - Updated stale root-module imports from:
   `rdma-demo/server-client-demo/...`
   to:
@@ -934,7 +934,7 @@ Resolve all broken imports after moving the RDMA code out of the local AWS SDK o
   [internal/inmems3/zcopy/service.go](/users/nehalem/rdma-demo/internal/inmems3/zcopy/service.go)
   and the related tests/helpers that imported those packages.
 - Module graph fix:
-  ran `go mod tidy`, which added the local `github.com/hyscale-lab/rdma-demo/rdma` requirement through the existing root `replace` and refreshed [go.sum](/users/nehalem/rdma-demo/go.sum) for the now-active dependency graph.
+  ran `go mod tidy`, which added the local `github.com/hyscale-lab/rdma-demo/pkg/rdma` requirement through the existing root `replace` and refreshed [go.sum](/users/nehalem/rdma-demo/go.sum) for the now-active dependency graph.
 - Verification:
   `rg -n 'rdma-demo/server-client-demo|github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma|aws/transport/http/rdma/s3rdmaclient|aws/transport/http/rdma/zcopyproto' cmd internal pkg` returned no matches.
   `gofmt -w ...` passed on the touched files.

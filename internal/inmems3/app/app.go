@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/pkg/rdma"
 	"google.golang.org/grpc"
 
 	"github.com/hyscale-lab/rdma-demo/internal/inmems3/control"

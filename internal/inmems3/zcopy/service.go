@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
-	"github.com/hyscale-lab/rdma-demo/rdma/zcopyproto"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/pkg/rdma"
+	"github.com/hyscale-lab/rdma-demo/pkg/rdma/zcopyproto"
 
 	"github.com/hyscale-lab/rdma-demo/internal/inmems3/ingest"
 	"github.com/hyscale-lab/rdma-demo/internal/inmems3/store"

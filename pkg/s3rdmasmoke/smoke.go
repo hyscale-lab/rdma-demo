@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
-	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
-	"github.com/hyscale-lab/rdma-demo/rdma/client"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/pkg/rdma"
+	"github.com/hyscale-lab/rdma-demo/pkg/rdma/client"
 )
 
 const (

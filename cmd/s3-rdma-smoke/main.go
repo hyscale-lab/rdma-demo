@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/pkg/rdma"
 
 	"github.com/hyscale-lab/rdma-demo/pkg/s3rdmasmoke"
 )
