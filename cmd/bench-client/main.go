@@ -19,7 +19,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
@@ -39,7 +38,6 @@ type benchConfig struct {
 	warmup           int
 	objectSize       int
 	requestTimeout   time.Duration
-	allowFallback    bool
 	accessKey        string
 	secretKey        string
 	verbose          bool
@@ -51,8 +49,6 @@ type benchConfig struct {
 	rdmaRecvDepth    int
 	rdmaInline       int
 	rdmaSignalIntvl  int
-	rdmaOpenParallel int
-	rdmaOpenMinIntvl time.Duration
 	rdmaMaxConns     int
 	rdmaSharePool    bool
 	rdmaSharePoolKey string
@@ -173,7 +169,6 @@ func parseFlags() benchConfig {
 	flag.IntVar(&cfg.warmup, "warmup", 100, "warmup operations before measuring")
 	flag.IntVar(&cfg.objectSize, "object-size", 4096, "object size in bytes")
 	flag.DurationVar(&cfg.requestTimeout, "request-timeout", 5*time.Second, "per-request timeout")
-	flag.BoolVar(&cfg.allowFallback, "allow-fallback", false, "allow RDMA dialer to fallback to TCP")
 	flag.StringVar(&cfg.accessKey, "access-key", "test", "access key id")
 	flag.StringVar(&cfg.secretKey, "secret-key", "test", "secret key")
 	flag.BoolVar(&cfg.verbose, "verbose", false, "enable verbose logs")
@@ -188,8 +183,6 @@ func parseFlags() benchConfig {
 	flag.IntVar(&cfg.rdmaRecvDepth, "rdma-recv-depth", 0, "RDMA recv queue depth (0=default)")
 	flag.IntVar(&cfg.rdmaInline, "rdma-inline-threshold", 0, "RDMA inline threshold (0=default)")
 	flag.IntVar(&cfg.rdmaSignalIntvl, "rdma-send-signal-interval", 0, "RDMA send signal interval (0=default)")
-	flag.IntVar(&cfg.rdmaOpenParallel, "rdma-open-parallelism", awsrdmahttp.DefaultOpenParallelism, "RDMA open parallelism")
-	flag.DurationVar(&cfg.rdmaOpenMinIntvl, "rdma-open-min-interval", awsrdmahttp.DefaultOpenMinInterval, "RDMA minimum interval between open attempts")
 	flag.IntVar(&cfg.rdmaMaxConns, "rdma-max-conns-per-host", 0, "RDMA max connections per host (<=0 uses adaptive default)")
 	flag.BoolVar(&cfg.rdmaSharePool, "rdma-shared-http-pool", false, "enable shared HTTP connection pool")
 	flag.StringVar(&cfg.rdmaSharePoolKey, "rdma-shared-http-pool-key", "", "shared HTTP connection pool key (empty uses SDK default key)")

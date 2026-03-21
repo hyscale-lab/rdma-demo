@@ -14,8 +14,9 @@ This document captures the target design for the new standalone `s3-rdma-server`
 
 ```mermaid
 flowchart LR
-    Smoke["s3-rdma-smoke\n(tcp or rdma mode)"]
-    SDK["AWS S3 SDK / s3rdmaclient"]
+    Smoke["s3-rdma-smoke"]
+    TCPSDK["AWS service/s3 client\n(TCP only)"]
+    RDMASDK["s3rdmaclient\n(RDMA zero-copy only)"]
     Main["cmd/s3-rdma-server"]
     App["internal/s3rdmaserver/app"]
     HTTP["internal/s3rdmaserver/s3api"]
@@ -24,8 +25,10 @@ flowchart LR
     Loader["startup payload loader"]
     Disk["payload-root folder tree"]
 
-    Smoke --> SDK
-    SDK --> Main
+    Smoke --> TCPSDK
+    Smoke --> RDMASDK
+    TCPSDK --> Main
+    RDMASDK --> Main
     Main --> App
     App --> HTTP
     App --> ZC
@@ -89,6 +92,7 @@ sequenceDiagram
 Notes:
 
 - RDMA is used only for the zcopy path.
+- The supported RDMA client path is `s3rdmaclient`; the standard `service/s3` client remains TCP-only in this repo.
 - No non-zcopy RDMA API is implemented.
 - The server does not persist uploaded PUT bytes.
 
@@ -140,6 +144,12 @@ Expected smoke-tool semantics:
 - `put`: upload succeeds
 - `get`: preloaded object is readable and optionally verified
 - `put-get`: upload succeeds, but later `GET` of that uploaded key should fail unless the key was already preloaded
+
+Client mapping:
+
+- TCP mode uses the standard `service/s3` client.
+- RDMA mode uses `s3rdmaclient`.
+- There is no supported RDMA path through the standard `service/s3` client.
 
 ## Startup Data Loading
 

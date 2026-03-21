@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 
 	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
 	"github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/zcopyproto"
+	log "github.com/sirupsen/logrus"
 
 	"rdma-demo/server-client-demo/internal/s3rdmaserver/store"
 )
@@ -238,7 +238,7 @@ func (zc *zcopyConn) recvPayloadAt(size int, sharedOffset int) error {
 func (s *Service) serveConn(conn awsrdmahttp.MessageConn) {
 	zc, err := newZCopyConn(conn)
 	if err != nil {
-		log.Printf("s3-rdma-server zcopy init failed: %v", err)
+		log.WithError(err).Error("s3-rdma-server zcopy init failed")
 		_ = conn.Close()
 		return
 	}
@@ -254,6 +254,7 @@ func (s *Service) serveConn(conn awsrdmahttp.MessageConn) {
 		if err != nil {
 			return
 		}
+		log.Debugf("zcopy received control message: %+v", msg)
 
 		switch msg.Op {
 		case zcopyproto.OpHelloReq:
@@ -295,12 +296,12 @@ func (s *Service) serveConn(conn awsrdmahttp.MessageConn) {
 			}
 		case zcopyproto.OpPutReq:
 			if err := s.handlePut(zc, msg); err != nil {
-				log.Printf("s3-rdma-server zcopy put failed: %v", err)
+				log.WithError(err).Error("s3-rdma-server zcopy put failed")
 				return
 			}
 		case zcopyproto.OpGetReq:
 			if err := s.handleGetAsync(zc, msg); err != nil {
-				log.Printf("s3-rdma-server zcopy get schedule failed: %v", err)
+				log.WithError(err).Error("s3-rdma-server zcopy get schedule failed")
 				return
 			}
 		default:
@@ -353,7 +354,7 @@ func (s *Service) handleGetAsync(zc *zcopyConn, msg zcopyproto.Message) error {
 	go func() {
 		defer zc.wg.Done()
 		if err := s.handleGet(zc, req); err != nil && !errors.Is(err, net.ErrClosed) {
-			log.Printf("s3-rdma-server zcopy get failed req=%d: %v", req.ReqID, err)
+			log.WithError(err).WithField("req_id", req.ReqID).Error("s3-rdma-server zcopy get failed")
 		}
 	}()
 	return nil

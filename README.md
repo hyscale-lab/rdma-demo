@@ -9,6 +9,10 @@ The new server is intentionally small:
 - `PUT` uploads are accepted and discarded.
 - Only startup-loaded payload-root objects are readable through `GET` / `HEAD` / list.
 
+The supported RDMA client path in this repo is
+`aws/transport/http/rdma/s3rdmaclient`. The standard `service/s3` client is
+used only for TCP/HTTP here.
+
 ## Main Entrypoints
 
 - Server: [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go)
