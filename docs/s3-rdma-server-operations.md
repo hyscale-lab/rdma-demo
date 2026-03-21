@@ -28,6 +28,10 @@ Then bind the RDMA listener to an active RDMA-backed interface address, not `127
   --payload-root /path/to/payload-root
 ```
 
+Use `s3rdmaclient`-based tools such as `s3-rdma-smoke --transport rdma` or
+`s3-rdma-zcopy-demo` for RDMA validation. The standard `service/s3` client is
+TCP-only in this repo.
+
 ## tmux launch
 
 ```bash

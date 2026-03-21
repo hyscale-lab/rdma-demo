@@ -219,6 +219,44 @@ Make `cmd/inmem-s3-server` easier to launch as a standalone binary from another 
 - [x] Task B: Add a dedicated server configuration reference and update README entrypoints/examples.
 - [x] Task C: Run tests/builds, verify the help output, and record results.
 
+# AWS SDK RDMA Cleanup Investigation
+
+## Goal
+
+Investigate the local `aws-sdk-go-v2` RDMA modifications since commit `d9b5cbfba1bb279c7422081d115812ab53583963` and identify any leftover code from the abandoned generic HTTP-over-RDMA approach that is no longer needed for the current zero-copy `s3rdmaclient` design.
+
+## Acceptance Criteria
+
+- Trace the high-level evolution from the early generic S3/HTTP RDMA dialer path to the current zero-copy path.
+- Distinguish active code required by the current repo from legacy-looking public surface that can confuse future users.
+- Produce an explicit report with file/line references and concrete cleanup options.
+
+## Working Notes
+
+- Commit `9d58608f686` added S3 client HTTP transport integration for an RDMA dialer and listener support.
+- Commit `4c770eeac82` later added the dedicated zero-copy `s3rdmaclient` and `zcopyproto` path.
+- Current repo usage appears to go through `aws/transport/http/rdma/s3rdmaclient` rather than the generic `service/s3` RDMA dialer toggles.
+- `aws/transport/http/client.go`'s `WithDialContext` hook predates the RDMA work and is not itself a RDMA-specific leftover.
+
+## Proposed Tasks
+
+- [x] Compare the RDMA-related SDK history after `d9b5cbf...` to identify first-generation vs current design pieces.
+- [x] Search the repo for actual usage of the generic S3 RDMA transport toggles versus `s3rdmaclient`.
+- [x] Capture the findings with exact file/line references and concrete cleanup options.
+
+## Results
+
+- The active benchmark and smoke flows in this repo use `aws/transport/http/rdma/s3rdmaclient`, `PutZeroCopy`, `GetZeroCopy`, and `EnsureBucket`; there is no non-test repo usage of the generic `service/s3` RDMA transport toggles.
+- The most likely leftover artifact is the public S3 client RDMA transport surface in:
+  [aws-sdk-go-v2/service/s3/options.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/options.go)
+  [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go)
+  [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go)
+- The low-level transport pieces that remain necessary for the current design include:
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/conn.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/conn.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go)
+  because they provide the RDMA message transport, listener, borrowed receive, and offset-send capabilities used by `s3rdmaclient` and the server.
+
 ## Results
 
 - Added a dedicated flag/config surface in:
@@ -460,3 +498,395 @@ Build a new, standalone `s3-rdma-server` that is intentionally smaller than `inm
 ## Current Focus
 
 - [x] Rebuild plan complete.
+
+# Remove Legacy RDMA-Aware HTTP Dialer
+
+## Goal
+
+Remove the abandoned generic HTTP-over-RDMA path from the local `aws-sdk-go-v2` fork while preserving the currently working zero-copy RDMA flow used by `s3-rdma-server`, `s3-rdma-smoke`, and `s3rdmaclient`.
+
+## Acceptance Criteria
+
+- The standard `service/s3` client no longer exposes or documents the legacy RDMA-aware HTTP dialing knobs.
+- The generic TCP/HTTP SDK path matches upstream as closely as possible while preserving the current zero-copy RDMA implementation.
+- The zero-copy RDMA path through `aws/transport/http/rdma/s3rdmaclient` still works without API or behavior regressions.
+- `s3-rdma-server` still serves TCP and RDMA zcopy traffic.
+- `s3-rdma-smoke` still passes in both TCP and RDMA modes.
+- No repo docs or comments imply that the standard S3 HTTP client is the supported zero-copy RDMA path.
+
+## Working Notes
+
+- Current active RDMA users in this repo go through:
+  [aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go)
+  [internal/s3rdmaserver/app/app.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/app/app.go)
+  [cmd/s3-rdma-zcopy-demo/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-zcopy-demo/main.go)
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+- The legacy-looking public surface is concentrated in:
+  [aws-sdk-go-v2/service/s3/options.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/options.go)
+  [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go)
+  [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/dialer.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/dialer.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/conn.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/conn.go)
+- `NewVerbsMessageListener` is still required by the active server path.
+- `BorrowedMessage`, `BorrowingMessageConn`, `MessageConn`, and offset-send support are still required by the active zero-copy path.
+- Against commit `16dc9bb90743290f48664dafc6dea07f5486cd0f`, the remaining generic SDK deltas are mainly:
+  [aws-sdk-go-v2/aws/transport/http/client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/client.go)
+  [aws-sdk-go-v2/aws/transport/http/client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/client_test.go)
+  and minor formatting/toolchain noise in:
+  [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go)
+  [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go)
+  [aws-sdk-go-v2/go.mod](/users/nehalem/rdma-demo/aws-sdk-go-v2/go.mod)
+
+## Proposed Tasks
+
+- [x] Task 1: Remove legacy RDMA transport knobs from the S3 client surface.
+- [x] Task 2: Remove or quarantine the generic RDMA HTTP bridge types that are no longer needed by zero-copy.
+- [x] Task 3: Update comments/docs so `s3rdmaclient` is the only documented RDMA client path.
+- [x] Task 4: Revert the remaining generic TCP/HTTP SDK modifications that are no longer needed.
+- [x] Task 5: Run full TCP and RDMA verification against the current `s3-rdma-server` implementation.
+
+## Task Details
+
+### Task 1
+
+- Delete from [aws-sdk-go-v2/service/s3/options.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/options.go):
+  `EnableRDMATransport`
+  `RDMADialer`
+  `WithEnableRDMATransport`
+  `WithRDMADialer`
+- Delete from [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go):
+  `AWS_S3_RDMA_ENABLED`
+  `AWS_S3_RDMA_DISABLE_FALLBACK`
+  `finalizeRDMATransportHTTPClient`
+  `resolveRDMATransportDialer`
+  `isRDMATransportEnabled`
+  `resolveBoolEnv` if it becomes unused
+- Delete the legacy S3 RDMA tests from [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go).
+
+### Task 2
+
+- Remove [aws-sdk-go-v2/aws/transport/http/rdma/dialer.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/dialer.go) if nothing outside the deleted S3 path still depends on it.
+- Remove `NewVerbsDialer` from [aws-sdk-go-v2/aws/transport/http/rdma/verbs.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs.go) if the dialer is removed.
+- Remove `NewVerbsListener` from [aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go) if you want zero-copy-only message listeners.
+- Remove the `net.Conn` adapter pieces from [aws-sdk-go-v2/aws/transport/http/rdma/conn.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/conn.go) only if they become fully unused:
+  `Conn`
+  `NewConn`
+  stream-style `Read`/`Write`/deadline logic
+- Keep the message-oriented pieces used by zero-copy:
+  `MessageConn`
+  `BorrowedMessage`
+  `BorrowingMessageConn`
+  `MessageListener`
+
+### Task 3
+
+- Update package comments and docs so the supported RDMA client path is:
+  [aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go)
+- Make sure README/docs for the standalone server and smoke tool do not mention the removed S3 RDMA HTTP dialer path.
+- Add a short note near the RDMA transport package if needed explaining that the message-oriented API is the supported surface for zero-copy.
+
+### Task 4
+
+- Revert [aws-sdk-go-v2/aws/transport/http/client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/client.go) and [aws-sdk-go-v2/aws/transport/http/client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/client_test.go) to upstream if the current repo does not need:
+  `BuildableClient.WithDialContext`
+  `BuildableClient.CloseIdleConnections`
+  the added `dialContext` clone behavior
+  the added `suppressBadHTTPRedirectTransport.CloseIdleConnections`
+- Revert generic S3 formatting-only drift in:
+  [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go)
+  [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go)
+- Decide whether to keep or drop the fork-local toolchain line in:
+  [aws-sdk-go-v2/go.mod](/users/nehalem/rdma-demo/aws-sdk-go-v2/go.mod)
+  based on whether merge-minimization or toolchain pinning is more important.
+- Keep the RDMA-specific subtree intact:
+  [aws-sdk-go-v2/aws/transport/http/rdma](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma)
+
+### Task 5
+
+- Run:
+  `go test ./...`
+  `CGO_ENABLED=1 go test -tags rdma ./...`
+  `go build ./cmd/...`
+- Re-run live smoke against the current server:
+  TCP `s3-rdma-smoke --transport tcp`
+  RDMA `s3-rdma-smoke --transport rdma`
+- Re-check:
+  [cmd/s3-rdma-zcopy-demo/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-zcopy-demo/main.go)
+  [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go)
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+  to confirm no removed API is still referenced.
+
+## Results
+
+- Task 1 completed.
+- Removed the legacy S3 RDMA client surface from:
+  [aws-sdk-go-v2/service/s3/options.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/options.go)
+  [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go)
+  [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go)
+- Deleted:
+  `EnableRDMATransport`
+  `RDMADialer`
+  `WithEnableRDMATransport`
+  `WithRDMADialer`
+  `AWS_S3_RDMA_ENABLED`
+  `AWS_S3_RDMA_DISABLE_FALLBACK`
+  `finalizeRDMATransportHTTPClient`
+  `resolveRDMATransportDialer`
+  `isRDMATransportEnabled`
+  `resolveBoolEnv`
+  and the matching legacy S3 RDMA tests.
+- Verified no S3-facing legacy RDMA symbols remain with:
+  `rg -n "EnableRDMATransport|WithEnableRDMATransport|WithRDMADialer|RDMADialer|AWS_S3_RDMA_ENABLED|AWS_S3_RDMA_DISABLE_FALLBACK" aws-sdk-go-v2`
+- Task 1 verification:
+  `gofmt -w aws-sdk-go-v2/service/s3/options.go aws-sdk-go-v2/service/s3/api_client.go aws-sdk-go-v2/service/s3/api_client_test.go` passed.
+  `GOTOOLCHAIN=go1.26.1 go test ./...` passed in [aws-sdk-go-v2/service/s3](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3).
+  `go test ./...` passed at repo root.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed at repo root.
+  `go build ./cmd/s3-rdma-server ./cmd/s3-rdma-smoke` passed.
+- Verification note:
+  the nested `aws-sdk-go-v2/service/s3` module tries to auto-download `go1.23` by default, which is not available as a toolchain tag in this environment, so the focused module test was run with `GOTOOLCHAIN=go1.26.1` to use the already-installed local toolchain.
+- Task 2 completed.
+- Removed the legacy RDMA HTTP bridge layer from:
+  [aws-sdk-go-v2/aws/transport/http/rdma/conn.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/conn.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/dialer.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/dialer.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_stub.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_stub.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go)
+- Deleted the old stream-adapter and dialer tests in:
+  [aws-sdk-go-v2/aws/transport/http/rdma/conn_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/conn_test.go)
+  and removed the `NewVerbsDialer` test from [aws-sdk-go-v2/aws/transport/http/rdma/verbs_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_test.go).
+- The RDMA transport package now keeps only the message-oriented zero-copy surface:
+  `MessageConn`
+  `BorrowedMessage`
+  `BorrowingMessageConn`
+  `MessageListener`
+  `VerbsOptions.Open`
+  `NewVerbsMessageListener`
+- Removed:
+  `Dialer`
+  `NewVerbsDialer`
+  `NewVerbsListener`
+  the `Conn` / `NewConn` net.Conn adapter
+  the `verbsListener.Accept() (net.Conn, error)` path
+- Downstream compatibility cleanup:
+  [cmd/bench-client/main.go](/users/nehalem/rdma-demo/cmd/bench-client/main.go) had dead flags tied to the removed dialer bridge (`allow-fallback`, `rdma-open-parallelism`, `rdma-open-min-interval`), so those references were removed to keep the repo building cleanly. This did not change active behavior because `bench-client` already rejects `mode=rdma`.
+- Verified no bridge symbols remain in the RDMA transport package with:
+  `rg -n "NewConn\\(|type Conn struct|NewVerbsDialer\\(|NewVerbsListener\\(|\\bDialer\\b|newVerbsListener\\(" aws-sdk-go-v2/aws/transport/http/rdma`
+- Task 2 verification:
+  `gofmt -w aws-sdk-go-v2/aws/transport/http/rdma/conn.go aws-sdk-go-v2/aws/transport/http/rdma/verbs.go aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go aws-sdk-go-v2/aws/transport/http/rdma/verbs_stub.go aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go aws-sdk-go-v2/aws/transport/http/rdma/verbs_test.go` passed.
+  `gofmt -w cmd/bench-client/main.go` passed.
+  `GOTOOLCHAIN=go1.26.1 go test ./aws/transport/http/rdma` passed in [aws-sdk-go-v2](/users/nehalem/rdma-demo/aws-sdk-go-v2).
+  `GOTOOLCHAIN=go1.26.1 CGO_ENABLED=1 go test -tags rdma ./aws/transport/http/rdma` passed in [aws-sdk-go-v2](/users/nehalem/rdma-demo/aws-sdk-go-v2).
+  `go test ./...` passed at repo root.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed at repo root.
+  `go build ./cmd/s3-rdma-server ./cmd/s3-rdma-smoke ./cmd/s3-rdma-zcopy-demo` passed.
+- Task 3 completed.
+- Updated repo docs so the supported client mapping is explicit:
+  TCP uses the standard `service/s3` client
+  RDMA uses `s3rdmaclient`
+  there is no supported RDMA path through the standard `service/s3` client
+- Updated docs in:
+  [README.md](/users/nehalem/rdma-demo/README.md)
+  [docs/s3-rdma-server-architecture.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-architecture.md)
+  [docs/s3-rdma-server-config.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-config.md)
+  [docs/s3-rdma-server-operations.md](/users/nehalem/rdma-demo/docs/s3-rdma-server-operations.md)
+  [docs/s3-rdma-smoke.md](/users/nehalem/rdma-demo/docs/s3-rdma-smoke.md)
+- Added code comments that point future readers at the supported zero-copy RDMA surfaces in:
+  [aws-sdk-go-v2/aws/transport/http/rdma/doc.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/doc.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/conn.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/conn.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go)
+  [aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go)
+- Task 3 verification:
+  `gofmt -w aws-sdk-go-v2/aws/transport/http/rdma/doc.go aws-sdk-go-v2/aws/transport/http/rdma/conn.go aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener.go aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient/client.go` passed.
+  `rg -n 'RDMA-aware HTTP|HTTP-over-RDMA|NewVerbsDialer|NewVerbsListener|allow-fallback|rdma-open-parallelism|rdma-open-min-interval' README.md docs aws-sdk-go-v2/aws/transport/http/rdma --glob '!**/*_test.go'` returned no matches.
+  `go test ./...` passed at repo root.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed at repo root.
+- Task 4 completed.
+- Reverted the remaining generic TCP/HTTP SDK modifications in:
+  [aws-sdk-go-v2/aws/transport/http/client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/client.go)
+  [aws-sdk-go-v2/aws/transport/http/client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/client_test.go)
+  [aws-sdk-go-v2/go.mod](/users/nehalem/rdma-demo/aws-sdk-go-v2/go.mod)
+  [aws-sdk-go-v2/service/s3/api_client.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client.go)
+  [aws-sdk-go-v2/service/s3/api_client_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3/api_client_test.go)
+- Removed no-longer-needed generic SDK changes:
+  `BuildableClient.WithDialContext`
+  `BuildableClient.CloseIdleConnections`
+  the extra `dialContext` clone state
+  the `suppressBadHTTPRedirectTransport.CloseIdleConnections` forwarding
+  the fork-local `toolchain` line in the nested AWS SDK `go.mod`
+- The RDMA-specific subtree under
+  [aws-sdk-go-v2/aws/transport/http/rdma](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma)
+  was left untouched during Task 4 so the current zero-copy client/server path remains isolated from this merge-minimization cleanup.
+- Verified the generic cleanup is not referenced by the current repo with:
+  `rg -n "WithDialContext\\(|CloseIdleConnections\\(|dialContext" aws-sdk-go-v2 cmd pkg internal`
+- Task 4 verification:
+  `gofmt -w aws-sdk-go-v2/aws/transport/http/client.go aws-sdk-go-v2/aws/transport/http/client_test.go aws-sdk-go-v2/service/s3/api_client.go aws-sdk-go-v2/service/s3/api_client_test.go` passed.
+  `GOTOOLCHAIN=go1.26.1 go test ./aws/transport/http` passed in [aws-sdk-go-v2](/users/nehalem/rdma-demo/aws-sdk-go-v2).
+  `GOTOOLCHAIN=go1.26.1 go test ./...` passed in [aws-sdk-go-v2/service/s3](/users/nehalem/rdma-demo/aws-sdk-go-v2/service/s3).
+  `go test ./...` passed at repo root.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed at repo root.
+  `go build ./cmd/s3-rdma-server ./cmd/s3-rdma-smoke ./cmd/s3-rdma-zcopy-demo` passed.
+- Task 5 completed.
+- Re-checked the current entrypoints for removed generic HTTP/RDMA bridge APIs:
+  [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go)
+  [cmd/s3-rdma-zcopy-demo/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-zcopy-demo/main.go)
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+- Reference verification:
+  `rg -n "WithDialContext\\(|CloseIdleConnections\\(|NewVerbsDialer\\(|NewVerbsListener\\(" cmd/s3-rdma-zcopy-demo/main.go cmd/s3-rdma-server/main.go pkg/s3rdmasmoke/smoke.go` returned no matches.
+- Task 5 verification:
+  `go test ./...` passed at repo root.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed at repo root.
+  `go build ./cmd/...` passed at repo root.
+  Created a temporary payload-root under `/tmp/s3-rdma-task5.GmIDtL` with one preloaded object:
+  `s3://bench-bucket/preloaded/object.bin` size `4096`.
+  Live server launch for smoke verification:
+  `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-server --tcp-listen 127.0.0.1:19090 --enable-rdma-zcopy --rdma-zcopy-listen 10.0.1.1:19191 --payload-root /tmp/s3-rdma-task5.GmIDtL`
+  Live TCP smoke:
+  `go run ./cmd/s3-rdma-smoke --transport tcp --endpoint 127.0.0.1:19090 --bucket bench-bucket --key preloaded/object.bin --op get --payload-size 4096` passed.
+  `go run ./cmd/s3-rdma-smoke --transport tcp --endpoint 127.0.0.1:19090 --bucket bench-bucket --key task5-tcp-put-get.bin --op put-get --payload-size 4096` passed.
+  Live RDMA smoke:
+  `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-smoke --transport rdma --endpoint 10.0.1.1:19191 --bucket bench-bucket --key preloaded/object.bin --op get --payload-size 4096` passed.
+  `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-smoke --transport rdma --endpoint 10.0.1.1:19191 --bucket bench-bucket --key task5-rdma-put-get.bin --op put-get --payload-size 4096` passed.
+- Verification note:
+  launching `s3-rdma-server` without `-tags rdma` fails cleanly with `rdma verbs backend unavailable`, so live RDMA verification must use an RDMA build and an RDMA-backed interface address rather than loopback.
+- Residual note:
+  during the live `go run -tags rdma ./cmd/s3-rdma-server ...` verification, the server logged `shutdown requested` on `SIGINT` but did not exit promptly; the exact verification process tree had to be stopped with a targeted `TERM`. The TCP and RDMA smoke results were still successful, but RDMA shutdown/teardown likely needs another look.
+
+# RDMA Shutdown Path Fix
+
+## Goal
+
+Fix the standalone RDMA server shutdown hang so `s3-rdma-server` exits promptly on `SIGINT`/`SIGTERM` when the RDMA zcopy listener is enabled.
+
+## Acceptance Criteria
+
+- `app.Run` returns promptly after shutdown is requested with the RDMA listener enabled.
+- The RDMA listener close path no longer blocks indefinitely when no incoming connection is waking `AcceptMessage`.
+- Regression coverage exists for the listener shutdown sequencing.
+- Verification includes `go test ./...`, `CGO_ENABLED=1 go test -tags rdma ./...`, and a live `go run -tags rdma ./cmd/s3-rdma-server ...` shutdown repro.
+
+## Working Notes
+
+- The observed hang happened after successful live TCP and RDMA smoke traffic, during shutdown of `go run -tags rdma ./cmd/s3-rdma-server`.
+- `internal/s3rdmaserver/app/app.go` blocks on `zcopySrv.Close()`, so if RDMA listener close hangs, process exit hangs.
+- `aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go` currently calls `go_rdma_listener_close()` before waiting for accept workers to exit, and the C-side close can race a blocking `rdma_get_cm_event`.
+
+## Proposed Tasks
+
+- [x] Reproduce and localize the RDMA shutdown hang in the listener close path.
+- [x] Fix the RDMA listener shutdown ordering so accept workers can exit cleanly.
+- [x] Add regression coverage for prompt close behavior.
+- [x] Run tests and live shutdown verification.
+- [x] Summarize the fix and record any new lesson.
+
+## Results
+
+- Root cause:
+  [aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_linux_cgo.go)
+  destroyed the C RDMA listener before its accept workers had exited. Those workers were blocked in `rdma_get_cm_event`, so `verbsListener.Close()` could hang during shutdown.
+- Fix:
+  changed the RDMA accept path to poll the listener event channel with a short timeout and treat idle waits as a normal timeout instead of a hard error.
+  changed `verbsListener.Close()` to mark the listener closed, wait for accept workers to exit, and only then destroy the C listener resources.
+- Regression coverage:
+  added [verbs_listener_test.go](/users/nehalem/rdma-demo/aws-sdk-go-v2/aws/transport/http/rdma/verbs_listener_test.go)
+  with `TestVerbsMessageListenerClosePrompt`, which creates a real RDMA message listener and fails if `Close()` does not return within 2 seconds.
+- Verification:
+  `GOTOOLCHAIN=go1.26.1 CGO_ENABLED=1 go test -tags rdma ./aws/transport/http/rdma -run TestVerbsMessageListenerClosePrompt -count=1` passed.
+  `GOTOOLCHAIN=go1.26.1 CGO_ENABLED=1 go test -tags rdma ./aws/transport/http/rdma` passed.
+  `go test ./...` passed at repo root.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed at repo root.
+  `go build ./cmd/s3-rdma-server ./cmd/s3-rdma-smoke ./cmd/s3-rdma-zcopy-demo` passed.
+  live repro:
+  started `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-server --tcp-listen 127.0.0.1:19094 --enable-rdma-zcopy --rdma-zcopy-listen 10.0.1.1:19195 --payload-root /tmp/s3-rdma-shutdown-fix.qS3fn0`
+  confirmed TCP and RDMA `get` smoke both passed
+  sent `SIGINT`
+  verified the process exited promptly and no matching `s3-rdma-server` process remained.
+
+# Smoke Failure Investigation
+
+## Goal
+
+Explain and fix why the current `s3-rdma-smoke` TCP and RDMA commands are failing against the expected local server endpoints.
+
+## Acceptance Criteria
+
+- We can explain the current `connection refused` TCP error and the RDMA connect rejection.
+- If there is a code/config bug, it is fixed at the root cause.
+- Live smoke succeeds again for both TCP and RDMA against the intended server process.
+- Results and any new lesson are recorded.
+
+## Proposed Tasks
+
+- [x] Inspect the current server runtime state and reproduce the reported TCP/RDMA smoke failures.
+- [x] Isolate and fix the root cause in the server or smoke path.
+- [x] Add regression coverage or documentation updates if needed.
+- [x] Re-run live smoke verification for TCP and RDMA.
+- [x] Summarize the result and record any new lesson.
+
+## Results
+
+- Root cause:
+  there was no running [s3-rdma-server](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go) or [inmem-s3-server](/users/nehalem/rdma-demo/cmd/inmem-s3-server/main.go) process, and nothing was listening on `127.0.0.1:10090` or `10.0.1.1:10191`.
+- Evidence:
+  `ps -ef | grep '[s]3-rdma-server\|[i]nmem-s3-server'` returned no server process.
+  `ss -ltnp '( sport = :10090 or sport = :10191 )'` showed no listeners on the smoke ports.
+- Interpretation:
+  the TCP failure was expected because the endpoint was closed (`connection refused`).
+  the RDMA failure was also consistent with "no usable server listener at that endpoint"; in this environment the client retried and surfaced a CM connect rejection (`RDMA_CM_EVENT_REJECTED status=8`) rather than a TCP-style refused socket error.
+- Verification repro:
+  created a temporary payload root under `/tmp/s3-rdma-smoke-check.hRjL3p` containing `s3://smoke-bucket/preloaded.txt` with 7 bytes.
+  started `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-server --tcp-listen 127.0.0.1:10090 --enable-rdma-zcopy --rdma-zcopy-listen 10.0.1.1:10191 --payload-root /tmp/s3-rdma-smoke-check.hRjL3p`
+  reran the exact user commands:
+  `./s3-rdma-smoke --transport rdma --endpoint 10.0.1.1:10191 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7` passed.
+  `./s3-rdma-smoke --transport tcp --endpoint http://127.0.0.1:10090 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7` passed.
+- Outcome:
+  no code change was needed for the smoke path itself; the issue was that the expected server was not running on those endpoints.
+
+# Server Logging Investigation
+
+## Goal
+
+Understand why `s3-rdma-server` logs are not printing properly and fix the logging path if there is a real formatting or consistency bug.
+
+## Acceptance Criteria
+
+- We can explain the current logging behavior of `s3-rdma-server`.
+- If logs are inconsistent or malformed, they are fixed at the root cause.
+- Verification includes a live server run that shows the intended log output.
+
+## Proposed Tasks
+
+- [x] Inspect current logging usage in the standalone server and RDMA path.
+- [x] Reproduce the current log output and identify the root cause.
+- [x] Implement the smallest logging fix if needed.
+- [x] Re-run a live server launch and verify the logs.
+- [x] Summarize the result and record any lesson if applicable.
+
+## Results
+
+- Root cause:
+  [internal/s3rdmaserver/app/app.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/app/app.go)
+  and [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go)
+  use `logrus`, but [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go)
+  was still importing the stdlib `log` package and emitting raw `Printf` lines for RDMA zcopy errors.
+- Effect:
+  startup and lifecycle logs used the configured `logrus` formatter, while zcopy error logs would bypass that configuration and print in a different style.
+- Fix:
+  switched the zcopy service logging to `logrus` and used structured error logging for:
+  zcopy init failure
+  zcopy PUT failure
+  zcopy GET scheduling failure
+  async zcopy GET failure with `req_id`
+- Regression coverage:
+  added a focused test in [internal/s3rdmaserver/zcopy/service_test.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service_test.go)
+  that forces a zcopy init failure and verifies the emitted line contains `logrus`-style `level=error` output.
+- Verification:
+  `gofmt -w internal/s3rdmaserver/zcopy/service.go internal/s3rdmaserver/zcopy/service_test.go` passed.
+  `go test ./internal/s3rdmaserver/zcopy` passed.
+  `go test ./...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  live runtime check:
+  started `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-server --tcp-listen 127.0.0.1:10096 --enable-rdma-zcopy --rdma-zcopy-listen 10.0.1.1:10197 --payload-root /tmp/s3-rdma-log-check.aUCVLx`
+  confirmed startup and shutdown logs still print through the normal `logrus` path.

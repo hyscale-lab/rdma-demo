@@ -29,6 +29,11 @@
   Default: `127.0.0.1:10191`
   For real RDMA traffic, set this to an active RDMA-backed interface address instead of loopback.
 
+RDMA client note:
+
+- The supported RDMA client path is `s3rdmaclient`.
+- The standard `service/s3` client in this repo is TCP/HTTP-only.
+
 ## RDMA Tuning
 
 - `--rdma-backlog`

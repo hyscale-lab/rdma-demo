@@ -27,3 +27,11 @@
 - Failure mode: I initially tried to run the live RDMA smoke against `127.0.0.1`, which let the server bind but failed client route resolution at runtime.
 - Detection signal: the Step 7 RDMA smoke returned `rdma_resolve_route: No such device` and `open rdma connection: context deadline exceeded` until I switched the endpoint to an active RDMA-backed netdev address.
 - Prevention rule: for live RDMA verification, use `rdma link show` plus `ip addr show` to choose an active RDMA interface address instead of assuming loopback works.
+
+- Failure mode: I destroyed the C RDMA listener before its accept workers had exited, while those workers could still be blocked in `rdma_get_cm_event`, which made server shutdown hang.
+- Detection signal: the live `go run -tags rdma ./cmd/s3-rdma-server ...` repro logged `shutdown requested` on `SIGINT` but the process stayed alive until I sent a targeted `TERM`.
+- Prevention rule: for CGO-backed listener shutdown paths, close the logical listener first, let workers wake and exit on a bounded accept timeout, and only then destroy the underlying C resources; keep a prompt-close regression test around that sequence.
+
+- Failure mode: I mixed the stdlib `log` package into the `s3-rdma-server` zcopy path while the rest of the standalone server was using `logrus`, which made RDMA error logs bypass the configured formatter and look inconsistent.
+- Detection signal: code inspection showed [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go) importing `log` while the server entrypoint and app lifecycle used `github.com/sirupsen/logrus`.
+- Prevention rule: keep one logger stack per server path; when a standalone service is configured around `logrus`, avoid introducing stdlib `log` in adjacent components unless the output difference is intentional and documented.

@@ -1,8 +1,10 @@
 package zcopy
 
 import (
+	"bytes"
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
 	"github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/zcopyproto"
+	log "github.com/sirupsen/logrus"
 
 	"rdma-demo/server-client-demo/internal/s3rdmaserver/store"
 )
@@ -34,6 +37,26 @@ type fakeZCopyConn struct {
 	recvMsgPayload [][]byte
 	waitForSentAt  int
 }
+
+type fakeMessageOnlyConn struct {
+	closeCount atomic.Int32
+}
+
+func (c *fakeMessageOnlyConn) SendMessage(_ context.Context, _ []byte) error {
+	return nil
+}
+
+func (c *fakeMessageOnlyConn) RecvMessage(_ context.Context) ([]byte, error) {
+	return nil, net.ErrClosed
+}
+
+func (c *fakeMessageOnlyConn) Close() error {
+	c.closeCount.Add(1)
+	return nil
+}
+
+func (c *fakeMessageOnlyConn) LocalAddr() net.Addr  { return fakeAddr("local") }
+func (c *fakeMessageOnlyConn) RemoteAddr() net.Addr { return fakeAddr("remote") }
 
 func (c *fakeZCopyConn) SendMessage(_ context.Context, payload []byte) error {
 	c.mu.Lock()
@@ -337,6 +360,40 @@ func TestServiceServeConnHelloEnsureBucketPutAndGet(t *testing.T) {
 	}
 	if got, want := conn.sentAt[0].offset, getOffset; got != want {
 		t.Fatalf("payload offset = %d, want %d", got, want)
+	}
+}
+
+func TestServiceServeConnInitFailureUsesLogrusFormatting(t *testing.T) {
+	var buf bytes.Buffer
+	origOut := log.StandardLogger().Out
+	origFormatter := log.StandardLogger().Formatter
+	origLevel := log.StandardLogger().Level
+	log.SetOutput(&buf)
+	log.SetFormatter(&log.TextFormatter{
+		DisableTimestamp: true,
+		DisableColors:    true,
+	})
+	log.SetLevel(log.InfoLevel)
+	defer func() {
+		log.SetOutput(origOut)
+		log.SetFormatter(origFormatter)
+		log.SetLevel(origLevel)
+	}()
+
+	conn := &fakeMessageOnlyConn{}
+	svc := &Service{}
+	svc.serveConn(conn)
+
+	if got, want := conn.closeCount.Load(), int32(1); got != want {
+		t.Fatalf("close count = %d, want %d", got, want)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "level=error") {
+		t.Fatalf("expected logrus level output, got %q", output)
+	}
+	if !strings.Contains(output, "s3-rdma-server zcopy init failed") {
+		t.Fatalf("expected init failure message, got %q", output)
 	}
 }
 

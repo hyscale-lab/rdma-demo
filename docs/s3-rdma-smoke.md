@@ -2,6 +2,12 @@
 
 `s3-rdma-smoke` is the combined smoke tool for the standalone `s3-rdma-server`.
 
+Transport mapping:
+
+- TCP mode uses the standard `service/s3` client.
+- RDMA mode uses `s3rdmaclient`.
+- There is no supported RDMA mode through the standard `service/s3` client.
+
 ## TCP GET
 
 ```bash
