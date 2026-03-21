@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
-	"github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
+	"github.com/hyscale-lab/rdma-demo/rdma/client"
 )
 
 const (

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
 
-	"rdma-demo/server-client-demo/pkg/s3rdmasmoke"
+	"github.com/hyscale-lab/rdma-demo/pkg/s3rdmasmoke"
 )
 
 const (

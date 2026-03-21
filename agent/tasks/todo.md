@@ -890,3 +890,55 @@ Understand why `s3-rdma-server` logs are not printing properly and fix the loggi
   live runtime check:
   started `CGO_ENABLED=1 go run -tags rdma ./cmd/s3-rdma-server --tcp-listen 127.0.0.1:10096 --enable-rdma-zcopy --rdma-zcopy-listen 10.0.1.1:10197 --payload-root /tmp/s3-rdma-log-check.aUCVLx`
   confirmed startup and shutdown logs still print through the normal `logrus` path.
+
+# RDMA Module Relocation Import Fix
+
+## Goal
+
+Resolve all broken imports after moving the RDMA code out of the local AWS SDK override into `pkg/rdma`.
+
+## Acceptance Criteria
+
+- All stale imports that still point at the old AWS SDK RDMA package path are updated to the new `pkg/rdma` module path.
+- The root module and any nested modules build and test again after the relocation.
+- Any related module wiring needed for the new `pkg/rdma/go.mod` layout is corrected.
+
+## Proposed Tasks
+
+- [x] Inspect the new module layout and list all stale RDMA import paths.
+- [x] Update code imports and any affected module requirements/replaces.
+- [x] Fix any remaining compile or test failures from the relocation.
+- [x] Run verification and summarize the result.
+
+## Results
+
+- Updated stale RDMA imports from the old AWS SDK path to the relocated module:
+  `github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma`
+  -> `github.com/hyscale-lab/rdma-demo/rdma`
+  `github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/s3rdmaclient`
+  -> `github.com/hyscale-lab/rdma-demo/rdma/client`
+  `github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma/zcopyproto`
+  -> `github.com/hyscale-lab/rdma-demo/rdma/zcopyproto`
+- Updated stale root-module imports from:
+  `rdma-demo/server-client-demo/...`
+  to:
+  `github.com/hyscale-lab/rdma-demo/...`
+- Touched the command, server, smoke, and legacy in-memory server paths that still referenced the old module locations, including:
+  [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go)
+  [cmd/s3-rdma-smoke/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-smoke/main.go)
+  [cmd/s3-rdma-zcopy-demo/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-zcopy-demo/main.go)
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+  [internal/s3rdmaserver/app/app.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/app/app.go)
+  [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go)
+  [internal/inmems3/app/app.go](/users/nehalem/rdma-demo/internal/inmems3/app/app.go)
+  [internal/inmems3/zcopy/service.go](/users/nehalem/rdma-demo/internal/inmems3/zcopy/service.go)
+  and the related tests/helpers that imported those packages.
+- Module graph fix:
+  ran `go mod tidy`, which added the local `github.com/hyscale-lab/rdma-demo/rdma` requirement through the existing root `replace` and refreshed [go.sum](/users/nehalem/rdma-demo/go.sum) for the now-active dependency graph.
+- Verification:
+  `rg -n 'rdma-demo/server-client-demo|github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma|aws/transport/http/rdma/s3rdmaclient|aws/transport/http/rdma/zcopyproto' cmd internal pkg` returned no matches.
+  `gofmt -w ...` passed on the touched files.
+  `go mod tidy` passed.
+  `go test ./...` passed.
+  `go build ./cmd/...` passed.
+  `CGO_ENABLED=1 go test -tags rdma ./...` passed.

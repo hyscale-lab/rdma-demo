@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
 	log "github.com/sirupsen/logrus"
 
-	"rdma-demo/server-client-demo/internal/s3rdmaserver/app"
+	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/app"
 )
 
 const (

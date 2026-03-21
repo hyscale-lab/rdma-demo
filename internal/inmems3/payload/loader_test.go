@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"rdma-demo/server-client-demo/internal/inmems3/store"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/store"
 )
 
 func TestLoaderAddFolderLoadsBucketTreeIntoStore(t *testing.T) {

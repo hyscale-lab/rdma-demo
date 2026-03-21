@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	awsrdmahttp "github.com/aws/aws-sdk-go-v2/aws/transport/http/rdma"
+	awsrdmahttp "github.com/hyscale-lab/rdma-demo/rdma"
 	"google.golang.org/grpc"
 
-	"rdma-demo/server-client-demo/internal/inmems3/control"
-	"rdma-demo/server-client-demo/internal/inmems3/payload"
-	"rdma-demo/server-client-demo/internal/inmems3/s3api"
-	"rdma-demo/server-client-demo/internal/inmems3/store"
-	"rdma-demo/server-client-demo/internal/inmems3/zcopy"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/control"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/payload"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/s3api"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/store"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/zcopy"
 )
 
 const (

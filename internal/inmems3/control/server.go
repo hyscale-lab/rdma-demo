@@ -6,8 +6,8 @@ import (
 	"io/fs"
 	"strings"
 
-	"rdma-demo/server-client-demo/internal/inmems3/payload"
-	controlv1 "rdma-demo/server-client-demo/proto/inmems3/control/v1"
+	"github.com/hyscale-lab/rdma-demo/internal/inmems3/payload"
+	controlv1 "github.com/hyscale-lab/rdma-demo/proto/inmems3/control/v1"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
