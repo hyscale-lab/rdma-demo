@@ -253,3 +253,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+assets/**/*
+!assets/**/.gitkeep
+!assets/**/.gitattributes
+!assets/**/*.squashfs
+!assets/**/*.id_rsa
