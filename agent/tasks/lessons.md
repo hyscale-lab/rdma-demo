@@ -35,3 +35,11 @@
 - Failure mode: I mixed the stdlib `log` package into the `s3-rdma-server` zcopy path while the rest of the standalone server was using `logrus`, which made RDMA error logs bypass the configured formatter and look inconsistent.
 - Detection signal: code inspection showed [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go) importing `log` while the server entrypoint and app lifecycle used `github.com/sirupsen/logrus`.
 - Prevention rule: keep one logger stack per server path; when a standalone service is configured around `logrus`, avoid introducing stdlib `log` in adjacent components unless the output difference is intentional and documented.
+
+- Failure mode: I classified almost every RDMA open error as retriable, which caused hard connection failures like `RDMA_CM_EVENT_REJECTED` to loop through repeated reopen attempts under pressure.
+- Detection signal: code inspection of [pkg/rdma/verbs_linux_cgo.go](/users/nehalem/rdma-demo/pkg/rdma/verbs_linux_cgo.go) showed `isRetriableOpenErr` matching broad `rdma verbs open` strings instead of only true timeout/cancel cases.
+- Prevention rule: keep transport retries narrow and typed; only retry explicit transient conditions like deadline/cancel or known temporary errno cases, and avoid string-based retry classification for hard connection failures.
+
+- Failure mode: I layered short outer per-operation contexts around RDMA client calls even though the transport path needed different timeout budgets for connect, control, and payload transfer, which made large transfers time out before the deeper transport-specific limits could help.
+- Detection signal: timeout inspection showed the smoke and demo tools still wrapping RDMA PUT/GET in old `5s` or `10s` request contexts after the client/server path had been identified as a serialized, large-payload-sensitive transport.
+- Prevention rule: when a transport has materially different connect/control/data behavior, split the timeout budgets at the call sites too; a longer internal data timeout is ineffective if an outer helper still cancels the whole operation early.

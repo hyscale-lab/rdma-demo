@@ -29,8 +29,18 @@ func TestConfigNormalizedDefaultsEndpointByTransport(t *testing.T) {
 		RDMASharedMem:  16 << 20,
 		RDMAGetMaxSize: 1024,
 	}
-	if got, want := rdmaCfg.normalized().Endpoint, defaultRDMAEndpoint; got != want {
+	normalized := rdmaCfg.normalized()
+	if got, want := normalized.Endpoint, defaultRDMAEndpoint; got != want {
 		t.Fatalf("rdma endpoint = %q, want %q", got, want)
+	}
+	if got, want := normalized.RDMAConnectTO, defaultRDMAConnectTO; got != want {
+		t.Fatalf("rdma connect timeout = %s, want %s", got, want)
+	}
+	if got, want := normalized.RDMAControlTO, defaultRDMAControlTO; got != want {
+		t.Fatalf("rdma control timeout = %s, want %s", got, want)
+	}
+	if got, want := normalized.RDMADataTO, defaultRDMADataTO; got != want {
+		t.Fatalf("rdma data timeout = %s, want %s", got, want)
 	}
 }
 

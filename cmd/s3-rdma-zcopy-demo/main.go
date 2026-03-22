@@ -19,6 +19,12 @@ import (
 	"github.com/hyscale-lab/rdma-demo/pkg/rdma/client"
 )
 
+const (
+	defaultConnectTimeout = 10 * time.Second
+	defaultControlTimeout = 30 * time.Second
+	defaultDataTimeout    = 2 * time.Minute
+)
+
 type demoClient struct {
 	id      int
 	key     string
@@ -42,7 +48,9 @@ type benchConfig struct {
 	concurrent   int
 	targetRPS    float64
 	duration     time.Duration
-	reqTimeout   time.Duration
+	connectTO    time.Duration
+	controlTO    time.Duration
+	dataTO       time.Duration
 	verifyResult bool
 }
 
@@ -89,6 +97,9 @@ func main() {
 		duration      time.Duration
 		verifyResult  bool
 		reqTimeout    time.Duration
+		connectTO     time.Duration
+		controlTO     time.Duration
+		dataTO        time.Duration
 		frameSize     int
 		sendDepth     int
 		recvDepth     int
@@ -112,7 +123,10 @@ func main() {
 	flag.Float64Var(&targetRPS, "target-rps", 0, "global target requests per second (>0 enables open-loop mode)")
 	flag.DurationVar(&duration, "duration", 0, "open-loop benchmark duration (for example: 20s)")
 	flag.BoolVar(&verifyResult, "verify-result", true, "verify GET payload bytes")
-	flag.DurationVar(&reqTimeout, "request-timeout", 10*time.Second, "per request timeout")
+	flag.DurationVar(&reqTimeout, "request-timeout", 0, "legacy fallback timeout for unset connect/control/data timeouts")
+	flag.DurationVar(&connectTO, "connect-timeout", 0, "RDMA connect timeout (0 uses 10s)")
+	flag.DurationVar(&controlTO, "control-timeout", 0, "RDMA control timeout (0 uses 30s)")
+	flag.DurationVar(&dataTO, "data-timeout", 0, "RDMA data timeout (0 uses 2m)")
 	flag.IntVar(&frameSize, "rdma-frame-payload", 0, "RDMA frame payload size (0=default)")
 	flag.IntVar(&sendDepth, "rdma-send-depth", 0, "RDMA send queue depth (0=default)")
 	flag.IntVar(&recvDepth, "rdma-recv-depth", 0, "RDMA recv queue depth (0=default)")
@@ -149,8 +163,23 @@ func main() {
 	if clientCount <= 0 {
 		fatalf("client-count must be > 0")
 	}
-	if reqTimeout <= 0 {
-		fatalf("request-timeout must be > 0")
+	if connectTO <= 0 {
+		connectTO = reqTimeout
+	}
+	if controlTO <= 0 {
+		controlTO = reqTimeout
+	}
+	if dataTO <= 0 {
+		dataTO = reqTimeout
+	}
+	if connectTO <= 0 {
+		connectTO = defaultConnectTimeout
+	}
+	if controlTO <= 0 {
+		controlTO = defaultControlTimeout
+	}
+	if dataTO <= 0 {
+		dataTO = defaultDataTimeout
 	}
 	if maxCredits < 0 {
 		fatalf("max-credits must be >= 0")
@@ -233,7 +262,9 @@ func main() {
 		}
 		cli, err := s3rdmaclient.New(s3rdmaclient.Config{
 			Endpoint:       endpoint,
-			RequestTimeout: reqTimeout,
+			ConnectTimeout: connectTO,
+			ControlTimeout: controlTO,
+			DataTimeout:    dataTO,
 			MaxCredits:     maxCredits,
 			SendQueueLen:   sendQueueLen,
 			VerbsOptions: awsrdmahttp.VerbsOptions{
@@ -278,7 +309,9 @@ func main() {
 		concurrent:   concurrent,
 		targetRPS:    targetRPS,
 		duration:     duration,
-		reqTimeout:   reqTimeout,
+		connectTO:    connectTO,
+		controlTO:    controlTO,
+		dataTO:       dataTO,
 		verifyResult: verifyResult,
 	}
 	var stats benchStats
@@ -497,20 +530,21 @@ func runClosedBurst(clients []demoClient, cfg benchConfig) benchStats {
 }
 
 func executeOperation(client demoClient, cfg benchConfig, requestID int, targetOffset int) (ref s3rdmaclient.BufferRef, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.reqTimeout)
-	defer cancel()
-
 	if cfg.op == "put-get" {
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.dataTO)
 		err = client.client.PutZeroCopy(ctx, cfg.bucket, client.key, s3rdmaclient.BufferRef{
 			Offset: cfg.putOffset,
 			Size:   cfg.putSize,
 		})
+		cancel()
 		if err != nil {
 			return s3rdmaclient.BufferRef{}, fmt.Errorf("put failed client=%d req=%d: %w", client.id, requestID, err)
 		}
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.dataTO)
 	ref, err = client.client.GetZeroCopy(ctx, cfg.bucket, client.key, targetOffset, cfg.maxGetSize)
+	cancel()
 	if err != nil {
 		return s3rdmaclient.BufferRef{}, fmt.Errorf("get failed client=%d req=%d: %w", client.id, requestID, err)
 	}

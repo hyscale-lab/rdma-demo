@@ -34,6 +34,9 @@ type Config struct {
 	RDMARecvDepth    int
 	RDMAInline       int
 	RDMASignalIntvl  int
+	RDMAControlTO    time.Duration
+	RDMADataTO       time.Duration
+	RDMAIdleTO       time.Duration
 	Region           string
 	PayloadRoot      string
 	MaxObjectSize    int64
@@ -86,6 +89,17 @@ func (c Config) Validate() error {
 	if c.RDMASignalIntvl < 0 {
 		return fmt.Errorf("rdma-send-signal-interval must be >= 0")
 	}
+	if c.EnableRDMAZCopy {
+		if c.RDMAControlTO <= 0 {
+			return fmt.Errorf("rdma-control-timeout must be > 0")
+		}
+		if c.RDMADataTO <= 0 {
+			return fmt.Errorf("rdma-data-timeout must be > 0")
+		}
+		if c.RDMAIdleTO <= 0 {
+			return fmt.Errorf("rdma-idle-timeout must be > 0")
+		}
+	}
 	return nil
 }
 
@@ -126,6 +140,9 @@ func Run(cfg Config) error {
 		"rdma_inline":          cfg.RDMAInline,
 		"rdma_lowcpu":          cfg.RDMALowCPU,
 		"rdma_signal_interval": cfg.RDMASignalIntvl,
+		"rdma_control_timeout": cfg.RDMAControlTO,
+		"rdma_data_timeout":    cfg.RDMADataTO,
+		"rdma_idle_timeout":    cfg.RDMAIdleTO,
 	}).Info("starting s3-rdma-server")
 
 	handler := s3api.NewHandler(memStore, cfg.Region, cfg.MaxObjectSize)
@@ -177,7 +194,11 @@ func Run(cfg Config) error {
 			cleanupSetup()
 			return fmt.Errorf("listen rdma zcopy %s: %w", cfg.RDMAZCopyListen, err)
 		}
-		zcopySrv = zcopy.NewService(msgListener, memStore, cfg.MaxObjectSize)
+		zcopySrv = zcopy.NewService(msgListener, memStore, cfg.MaxObjectSize, zcopy.Timeouts{
+			Control: cfg.RDMAControlTO,
+			Data:    cfg.RDMADataTO,
+			Idle:    cfg.RDMAIdleTO,
+		})
 		log.WithFields(log.Fields{
 			"transport": "rdma-zcopy",
 			"listen":    msgListener.Addr().String(),

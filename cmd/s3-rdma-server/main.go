@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	awsrdmahttp "github.com/hyscale-lab/rdma-demo/pkg/rdma"
 	log "github.com/sirupsen/logrus"
@@ -18,6 +19,9 @@ const (
 	defaultRDMAZCopyListen = "127.0.0.1:10191"
 	defaultRegion          = "us-east-1"
 	defaultMaxObjectSize   = 64 << 20
+	defaultRDMAControlTO   = 30 * time.Second
+	defaultRDMADataTO      = 2 * time.Minute
+	defaultRDMAIdleTO      = 5 * time.Minute
 )
 
 func usageText(name string) string {
@@ -48,6 +52,9 @@ func usageText(name string) string {
 	fmt.Fprintf(&b, "  --rdma-inline-threshold int\n\t\tRDMA inline threshold in bytes. Default: %d.\n", awsrdmahttp.DefaultVerbsInlineThreshold)
 	b.WriteString("  --rdma-lowcpu\n\t\tPrefer fewer RDMA completion signals when the signal interval is left at 0.\n")
 	fmt.Fprintf(&b, "  --rdma-send-signal-interval int\n\t\tRDMA send completion interval. Default: %d.\n", awsrdmahttp.DefaultVerbsSendSignalInterval)
+	fmt.Fprintf(&b, "  --rdma-control-timeout duration\n\t\tTimeout for RDMA control messages. Default: %s.\n", defaultRDMAControlTO)
+	fmt.Fprintf(&b, "  --rdma-data-timeout duration\n\t\tTimeout for RDMA payload transfer operations. Default: %s.\n", defaultRDMADataTO)
+	fmt.Fprintf(&b, "  --rdma-idle-timeout duration\n\t\tMaximum idle wait for the next RDMA control message before the server closes the connection. Default: %s.\n", defaultRDMAIdleTO)
 	return b.String()
 }
 
@@ -71,6 +78,9 @@ func main() {
 	rdmaRecvDepth := flag.Int("rdma-recv-depth", awsrdmahttp.DefaultVerbsRecvQueueDepth, "RDMA recv queue depth")
 	rdmaInline := flag.Int("rdma-inline-threshold", awsrdmahttp.DefaultVerbsInlineThreshold, "RDMA inline threshold in bytes")
 	rdmaSignalIntvl := flag.Int("rdma-send-signal-interval", awsrdmahttp.DefaultVerbsSendSignalInterval, "RDMA send signal interval")
+	rdmaControlTimeout := flag.Duration("rdma-control-timeout", defaultRDMAControlTO, "timeout for RDMA control messages")
+	rdmaDataTimeout := flag.Duration("rdma-data-timeout", defaultRDMADataTO, "timeout for RDMA payload transfer operations")
+	rdmaIdleTimeout := flag.Duration("rdma-idle-timeout", defaultRDMAIdleTO, "idle timeout waiting for the next RDMA control message")
 	flag.Parse()
 
 	cfg := app.Config{
@@ -86,6 +96,9 @@ func main() {
 		RDMARecvDepth:    *rdmaRecvDepth,
 		RDMAInline:       *rdmaInline,
 		RDMASignalIntvl:  *rdmaSignalIntvl,
+		RDMAControlTO:    *rdmaControlTimeout,
+		RDMADataTO:       *rdmaDataTimeout,
+		RDMAIdleTO:       *rdmaIdleTimeout,
 		Region:           *region,
 		PayloadRoot:      *payloadRoot,
 		MaxObjectSize:    *maxObjectSize,

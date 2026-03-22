@@ -25,7 +25,10 @@ const (
 	defaultRegion            = "us-east-1"
 	defaultAccessKey         = "test"
 	defaultSecretKey         = "test"
-	defaultRequestTimeout    = 5 * time.Second
+	defaultRequestTimeout    = 30 * time.Second
+	defaultRDMAConnectTO     = 10 * time.Second
+	defaultRDMAControlTO     = 30 * time.Second
+	defaultRDMADataTO        = 2 * time.Minute
 	defaultRDMASharedMemSize = 16 << 20
 	defaultRDMAGetOffset     = 8 << 20
 	defaultRDMAGetMaxSize    = 8 << 20
@@ -47,6 +50,9 @@ type Config struct {
 	Verify          bool
 	PayloadSize     int
 	RequestTimeout  time.Duration
+	RDMAConnectTO   time.Duration
+	RDMAControlTO   time.Duration
+	RDMADataTO      time.Duration
 	RDMASharedMem   int
 	RDMAPutOffset   int
 	RDMAGetOffset   int
@@ -123,6 +129,15 @@ func (c Config) normalized() Config {
 		c.PayloadSize = defaultPayloadSize
 	}
 	if c.Transport == transportRDMA {
+		if c.RDMAConnectTO <= 0 {
+			c.RDMAConnectTO = defaultRDMAConnectTO
+		}
+		if c.RDMAControlTO <= 0 {
+			c.RDMAControlTO = defaultRDMAControlTO
+		}
+		if c.RDMADataTO <= 0 {
+			c.RDMADataTO = defaultRDMADataTO
+		}
 		if c.RDMASharedMem <= 0 {
 			c.RDMASharedMem = defaultRDMASharedMemSize
 		}
@@ -169,6 +184,15 @@ func (c Config) Validate() error {
 	}
 	if c.RDMASharedMem <= 0 {
 		return fmt.Errorf("rdma-shared-memory-size must be > 0")
+	}
+	if c.RDMAConnectTO <= 0 {
+		return fmt.Errorf("rdma-connect-timeout must be > 0")
+	}
+	if c.RDMAControlTO <= 0 {
+		return fmt.Errorf("rdma-control-timeout must be > 0")
+	}
+	if c.RDMADataTO <= 0 {
+		return fmt.Errorf("rdma-data-timeout must be > 0")
 	}
 	if c.RDMAPutOffset < 0 {
 		return fmt.Errorf("rdma-put-offset must be >= 0")
@@ -295,7 +319,9 @@ func runRDMA(ctx context.Context, cfg Config) (result Result, err error) {
 
 	client, err := s3rdmaclient.New(s3rdmaclient.Config{
 		Endpoint:       cfg.Endpoint,
-		RequestTimeout: cfg.RequestTimeout,
+		ConnectTimeout: cfg.RDMAConnectTO,
+		ControlTimeout: cfg.RDMAControlTO,
+		DataTimeout:    cfg.RDMADataTO,
 		VerbsOptions: awsrdmahttp.VerbsOptions{
 			FramePayloadSize:   cfg.RDMAFrameSize,
 			SendQueueDepth:     cfg.RDMASendDepth,
@@ -429,7 +455,7 @@ func getObjectTCP(ctx context.Context, client *s3.Client, cfg Config) ([]byte, e
 }
 
 func ensureBucketRDMA(ctx context.Context, client *s3rdmaclient.Client, cfg Config) error {
-	opCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, cfg.RDMAControlTO)
 	defer cancel()
 	if err := client.EnsureBucket(opCtx, cfg.Bucket); err != nil {
 		return fmt.Errorf("rdma smoke: ensure bucket: %w", err)
@@ -438,7 +464,7 @@ func ensureBucketRDMA(ctx context.Context, client *s3rdmaclient.Client, cfg Conf
 }
 
 func putObjectRDMA(ctx context.Context, client *s3rdmaclient.Client, cfg Config) error {
-	opCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, cfg.RDMADataTO)
 	defer cancel()
 	if err := client.PutZeroCopy(opCtx, cfg.Bucket, cfg.Key, s3rdmaclient.BufferRef{
 		Offset: cfg.RDMAPutOffset,
@@ -450,7 +476,7 @@ func putObjectRDMA(ctx context.Context, client *s3rdmaclient.Client, cfg Config)
 }
 
 func getObjectRDMA(ctx context.Context, client *s3rdmaclient.Client, cfg Config) (s3rdmaclient.BufferRef, error) {
-	opCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
+	opCtx, cancel := context.WithTimeout(ctx, cfg.RDMADataTO)
 	defer cancel()
 	ref, err := client.GetZeroCopy(opCtx, cfg.Bucket, cfg.Key, cfg.RDMAGetOffset, cfg.RDMAGetMaxSize)
 	if err != nil {

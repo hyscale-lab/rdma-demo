@@ -2655,6 +2655,12 @@ func openVerbsConnOnce(ctx context.Context, host, port string, frameCap int, cfg
 	}
 
 	if result.rc != 0 {
+		if result.rc == C.int(C.EAGAIN) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, context.DeadlineExceeded
+		}
 		return nil, rdmaCError("open", result.rc, result.cErr)
 	}
 	if result.cConn == nil {
@@ -2676,11 +2682,7 @@ func isRetriableOpenErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "rdma verbs open")
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (c *verbsMessageConn) SendMessage(ctx context.Context, payload []byte) error {

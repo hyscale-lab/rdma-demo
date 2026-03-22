@@ -942,3 +942,121 @@ Resolve all broken imports after moving the RDMA code out of the local AWS SDK o
   `go test ./...` passed.
   `go build ./cmd/...` passed.
   `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+
+# RDMA Client Failure Investigation
+
+## Goal
+
+Investigate whether the relocated `pkg/rdma` client stack is correctly implemented and identify likely causes for the higher failure rate seen under the same load despite lower overhead.
+
+## Acceptance Criteria
+
+- Inspect the current `pkg/rdma` client, protocol, and verbs transport implementation for correctness and load-related failure risks.
+- Identify concrete failure-prone code paths or invariants that could explain a higher failure rate.
+- Verify the strongest findings with targeted tests, logs, or deterministic reasoning from the current code.
+- Record the findings and, if clear root causes emerge, fix them or propose the smallest safe next step.
+
+## Proposed Tasks
+
+- [x] Inspect `pkg/rdma` layout, tests, and critical client/protocol/verbs paths.
+- [x] Identify likely failure mechanisms under load and validate the strongest suspects.
+- [x] Fix clear correctness bugs if found, or document precise root-cause hypotheses with evidence.
+- [x] Run verification and summarize the findings.
+
+## Results
+
+- Inspected the current RDMA client, protocol, and verbs transport stack in:
+  [pkg/rdma/client/client.go](/users/nehalem/rdma-demo/pkg/rdma/client/client.go),
+  [pkg/rdma/zcopyproto/protocol.go](/users/nehalem/rdma-demo/pkg/rdma/zcopyproto/protocol.go),
+  [pkg/rdma/verbs.go](/users/nehalem/rdma-demo/pkg/rdma/verbs.go),
+  and [pkg/rdma/verbs_linux_cgo.go](/users/nehalem/rdma-demo/pkg/rdma/verbs_linux_cgo.go).
+- Confirmed one load amplifier and fixed it:
+  the RDMA open path retried nearly any `rdma verbs open` error, including hard `RDMA_CM_EVENT_REJECTED` failures.
+  That could create overlapping in-flight opens and turn transient pressure into repeated connection failures.
+  The fix now only retries true timeout/cancel cases.
+- Added a targeted regression test in
+  [pkg/rdma/verbs_open_retry_test.go](/users/nehalem/rdma-demo/pkg/rdma/verbs_open_retry_test.go)
+  to prove reject-style open failures are no longer treated as retriable.
+- Resource-leak finding:
+  there is no obvious unbounded leak in the normal request path.
+  Pending request channels are removed on completion or timeout, borrowed receive slots are reposted, and GET release callbacks are cleared on `Release` or `Close`.
+- Efficiency / blocking finding:
+  one RDMA client connection is not truly concurrent for large transfers.
+  The client serializes every outbound control/data operation through `sendSerialized`, the client receive loop blocks waiting for a borrowed payload immediately after `GetMeta`, and the server holds one `sendMu` across `GetMeta` plus the full payload write.
+  In practice, one large GET or PUT on a shared connection creates head-of-line blocking for unrelated requests on that same connection.
+- Timeout finding:
+  the stack uses aggressive fixed deadlines that make the serialization above visible as failures.
+  The RDMA client defaults `RequestTimeout` to 10 seconds when unset.
+  The smoke tool defaults to 5 seconds.
+  The server zcopy path hard-codes 30-second deadlines for control receive and payload send/receive.
+  Large payloads or queued requests can hit those deadlines even when the transport is otherwise healthy.
+- Protocol finding:
+  the current protocol is coherent for one in-flight data transfer sequence at a time per connection, but it is not a high-concurrency multiplexed protocol.
+  The absence of request IDs in the RDMA write notification path means the implementation preserves ordering by serializing the connection around data movement.
+- Operational implication:
+  if you share one `Client` across many concurrent large transfers, timeouts are expected.
+  The safer current usage model is a client/connection pool with few in-flight large operations per connection, plus a larger per-operation timeout budget.
+- Remaining design risk:
+  initial GET credits are derived from total shared-memory size rather than caller-specific offset partitioning.
+  That is not a confirmed cause of the observed timeout failures, but it remains a correctness risk when many large concurrent GETs share one region.
+- Verification:
+  in `pkg/rdma`, `go test ./...` passed and `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  at repo root, `go test ./...` passed, `CGO_ENABLED=1 go test -tags rdma ./...` passed, and `go build ./cmd/...` passed.
+
+# RDMA Timeout Mitigation Plan
+
+## Goal
+
+Reduce steady RDMA timeout failures, especially for larger payloads, without regressing the current lower-overhead transport path.
+
+## Acceptance Criteria
+
+- The client/server path no longer uses unexpectedly short fixed defaults that cause large transfers to time out under normal queueing.
+- One large request on a shared connection does not silently create misleading timeout behavior without operator visibility.
+- The code and docs clearly describe the supported concurrency model for one RDMA connection.
+- We have at least one focused regression or load-oriented verification step for the chosen mitigation.
+
+## Proposed Tasks
+
+- [x] Add configurable client/server timeout settings and raise the current default budgets to safer values for large transfers.
+- [ ] Add lightweight RDMA instrumentation for queue wait time, send duration, recv duration, and timeout causes.
+- [ ] Document the current connection-concurrency model and recommend pooling instead of many large concurrent ops on one `Client`.
+- [ ] Evaluate a small connection-pool helper or usage pattern for smoke/demo tools so high concurrency does not funnel through one connection.
+- [ ] Decide whether to keep the current ordered protocol or redesign it to carry request identity through the RDMA write notification path.
+- [ ] Run focused verification with large payloads and concurrent operations, then record results.
+
+## Step 1 Results
+
+- Added split RDMA timeout budgets in
+  [pkg/rdma/client/client.go](/users/nehalem/rdma-demo/pkg/rdma/client/client.go)
+  with separate connect, control, and data timeouts.
+  The old `RequestTimeout` field remains as a legacy fallback for unset values.
+- New client defaults are now:
+  connect=`10s`, control=`30s`, data=`2m`.
+  That is a safer fit for the stated low-concurrency, high-RPS workload with payloads up to `16 MiB`.
+- Added configurable RDMA zcopy server timeouts in
+  [internal/s3rdmaserver/zcopy/service.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service.go),
+  [internal/s3rdmaserver/app/app.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/app/app.go),
+  and [cmd/s3-rdma-server/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-server/main.go).
+  The server now distinguishes:
+  control timeout=`30s`, data timeout=`2m`, idle timeout=`5m`.
+- Updated the RDMA smoke tool in
+  [pkg/s3rdmasmoke/smoke.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke.go)
+  and [cmd/s3-rdma-smoke/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-smoke/main.go)
+  so RDMA connect/control/data budgets are configurable and no longer inherit the old `5s` default behavior.
+- Updated the RDMA benchmark/demo tool in
+  [cmd/s3-rdma-zcopy-demo/main.go](/users/nehalem/rdma-demo/cmd/s3-rdma-zcopy-demo/main.go)
+  so the old `--request-timeout` is only a legacy fallback and RDMA connect/control/data budgets can be configured separately.
+- Added focused regression coverage in:
+  [pkg/rdma/client/client_timeout_test.go](/users/nehalem/rdma-demo/pkg/rdma/client/client_timeout_test.go),
+  [pkg/s3rdmasmoke/smoke_test.go](/users/nehalem/rdma-demo/pkg/s3rdmasmoke/smoke_test.go),
+  and [internal/s3rdmaserver/zcopy/service_test.go](/users/nehalem/rdma-demo/internal/s3rdmaserver/zcopy/service_test.go).
+- Verification:
+  in `pkg/rdma`, `go test ./...` passed and `CGO_ENABLED=1 go test -tags rdma ./...` passed.
+  at repo root, `go test ./...` passed, `CGO_ENABLED=1 go test -tags rdma ./...` passed, and `go build ./cmd/...` passed.
+  CLI help checks passed for `go run ./cmd/s3-rdma-server --help` and `go run ./cmd/s3-rdma-smoke --help`.
+  Live smoke passed after Stage 1 with a temporary local server:
+  `./s3-rdma-smoke --transport tcp --endpoint http://127.0.0.1:10090 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7`
+  `./s3-rdma-smoke --transport rdma --endpoint 10.0.1.1:10191 --bucket smoke-bucket --key preloaded.txt --op get --payload-size 7`
+  `./s3-rdma-smoke --transport tcp --endpoint http://127.0.0.1:10090 --bucket smoke-bucket --key fresh-tcp.txt --op put-get --payload-size 4096`
+  `./s3-rdma-smoke --transport rdma --endpoint 10.0.1.1:10191 --bucket smoke-bucket --key fresh-rdma.txt --op put-get --payload-size 4096`

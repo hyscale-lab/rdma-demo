@@ -20,7 +20,10 @@ const (
 	defaultKey               = "smoke-object"
 	defaultOp                = "put-get"
 	defaultPayloadSize       = 4096
-	defaultRequestTimeout    = 5 * time.Second
+	defaultRequestTimeout    = 30 * time.Second
+	defaultRDMAConnectTO     = 10 * time.Second
+	defaultRDMAControlTO     = 30 * time.Second
+	defaultRDMADataTO        = 2 * time.Minute
 	defaultRDMASharedMemSize = 16 << 20
 	defaultRDMAPutOffset     = 0
 	defaultRDMAGetOffset     = 8 << 20
@@ -45,8 +48,11 @@ func usageText(name string) string {
 	fmt.Fprintf(&b, "  --op string\n\t\tSmoke operation: put, get, or put-get. Default: %s.\n", defaultOp)
 	b.WriteString("  --verify\n\t\tVerify the expected smoke semantics. Default: true.\n")
 	fmt.Fprintf(&b, "  --payload-size bytes\n\t\tPayload size in bytes. Used for PUT data and GET size checks. Default: %d.\n", defaultPayloadSize)
-	fmt.Fprintf(&b, "  --request-timeout duration\n\t\tPer-operation timeout. Default: %s.\n\n", defaultRequestTimeout)
+	fmt.Fprintf(&b, "  --request-timeout duration\n\t\tPer-operation timeout for the TCP path. Default: %s.\n\n", defaultRequestTimeout)
 	b.WriteString("RDMA-only:\n")
+	fmt.Fprintf(&b, "  --rdma-connect-timeout duration\n\t\tTimeout for opening the RDMA connection. Default: %s.\n", defaultRDMAConnectTO)
+	fmt.Fprintf(&b, "  --rdma-control-timeout duration\n\t\tTimeout for RDMA control operations such as hello and ensure-bucket. Default: %s.\n", defaultRDMAControlTO)
+	fmt.Fprintf(&b, "  --rdma-data-timeout duration\n\t\tTimeout for RDMA PUT/GET payload operations. Default: %s.\n", defaultRDMADataTO)
 	fmt.Fprintf(&b, "  --rdma-shared-memory-size bytes\n\t\tShared mmap region size. Default: %d.\n", defaultRDMASharedMemSize)
 	fmt.Fprintf(&b, "  --rdma-put-offset bytes\n\t\tPUT payload offset inside the shared memory region. Default: %d.\n", defaultRDMAPutOffset)
 	fmt.Fprintf(&b, "  --rdma-get-offset bytes\n\t\tGET target offset inside the shared memory region. Default: %d.\n", defaultRDMAGetOffset)
@@ -72,7 +78,10 @@ func main() {
 	op := flag.String("op", defaultOp, "smoke operation: put, get, or put-get")
 	verify := flag.Bool("verify", true, "verify expected smoke semantics")
 	payloadSize := flag.Int("payload-size", defaultPayloadSize, "payload size in bytes")
-	requestTimeout := flag.Duration("request-timeout", defaultRequestTimeout, "per-operation timeout")
+	requestTimeout := flag.Duration("request-timeout", defaultRequestTimeout, "per-operation timeout for the TCP path")
+	rdmaConnectTimeout := flag.Duration("rdma-connect-timeout", defaultRDMAConnectTO, "timeout for opening the RDMA connection")
+	rdmaControlTimeout := flag.Duration("rdma-control-timeout", defaultRDMAControlTO, "timeout for RDMA control operations")
+	rdmaDataTimeout := flag.Duration("rdma-data-timeout", defaultRDMADataTO, "timeout for RDMA PUT/GET payload operations")
 	rdmaSharedMem := flag.Int("rdma-shared-memory-size", defaultRDMASharedMemSize, "RDMA shared mmap region size")
 	rdmaPutOffset := flag.Int("rdma-put-offset", defaultRDMAPutOffset, "RDMA PUT offset in shared memory")
 	rdmaGetOffset := flag.Int("rdma-get-offset", defaultRDMAGetOffset, "RDMA GET offset in shared memory")
@@ -94,6 +103,9 @@ func main() {
 		Verify:          *verify,
 		PayloadSize:     *payloadSize,
 		RequestTimeout:  *requestTimeout,
+		RDMAConnectTO:   *rdmaConnectTimeout,
+		RDMAControlTO:   *rdmaControlTimeout,
+		RDMADataTO:      *rdmaDataTimeout,
 		RDMASharedMem:   *rdmaSharedMem,
 		RDMAPutOffset:   *rdmaPutOffset,
 		RDMAGetOffset:   *rdmaGetOffset,

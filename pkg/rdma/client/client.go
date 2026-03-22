@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	defaultMaxCredits   = 64
-	defaultSendQueueLen = 4096
+	defaultMaxCredits     = 64
+	defaultSendQueueLen   = 4096
+	defaultConnectTimeout = 10 * time.Second
+	defaultControlTimeout = 30 * time.Second
+	defaultDataTimeout    = 2 * time.Minute
 )
 
 // BufferRef describes a payload slice inside the shared memory region.
@@ -34,8 +37,13 @@ func (r BufferRef) end() int {
 // Config configures the supported S3 RDMA zero-copy client path for this
 // repository.
 type Config struct {
-	Endpoint       string
+	Endpoint string
+	// RequestTimeout is kept as a legacy fallback that applies to any unset
+	// connect/control/data timeout.
 	RequestTimeout time.Duration
+	ConnectTimeout time.Duration
+	ControlTimeout time.Duration
+	DataTimeout    time.Duration
 	VerbsOptions   rdma.VerbsOptions
 	MaxCredits     int
 	SendQueueLen   int
@@ -68,7 +76,9 @@ type Client struct {
 	sendAtConn offsetSender
 
 	sharedMemory   []byte
-	requestTimeout time.Duration
+	connectTimeout time.Duration
+	controlTimeout time.Duration
+	dataTimeout    time.Duration
 	framePayload   int
 	maxCredits     int
 	sendReqCh      chan sendRequest
@@ -89,6 +99,12 @@ type Client struct {
 	recvErr   error
 }
 
+type timeoutConfig struct {
+	connect time.Duration
+	control time.Duration
+	data    time.Duration
+}
+
 // New initializes the zero-copy RDMA S3 client and configures the transport to
 // register and use the provided shared memory region.
 func New(cfg Config, sharedMemory []byte) (*Client, error) {
@@ -104,10 +120,7 @@ func New(cfg Config, sharedMemory []byte) (*Client, error) {
 	verbsOpts := cfg.VerbsOptions
 	verbsOpts.SharedRWMemory = sharedMemory
 
-	timeout := cfg.RequestTimeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
+	timeouts := resolveTimeouts(cfg)
 	maxCredits := cfg.MaxCredits
 	if maxCredits <= 0 {
 		maxCredits = defaultMaxCredits
@@ -117,7 +130,7 @@ func New(cfg Config, sharedMemory []byte) (*Client, error) {
 		sendQueueLen = defaultSendQueueLen
 	}
 
-	openCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	openCtx, cancel := context.WithTimeout(context.Background(), timeouts.connect)
 	defer cancel()
 
 	msgConn, err := verbsOpts.Open(openCtx, "rdma", address)
@@ -140,7 +153,9 @@ func New(cfg Config, sharedMemory []byte) (*Client, error) {
 		borrowConn:     borrowConn,
 		sendAtConn:     sendAtConn,
 		sharedMemory:   sharedMemory,
-		requestTimeout: timeout,
+		connectTimeout: timeouts.connect,
+		controlTimeout: timeouts.control,
+		dataTimeout:    timeouts.data,
 		framePayload:   verbsOpts.FramePayloadSize,
 		maxCredits:     maxCredits,
 		sendReqCh:      make(chan sendRequest, sendQueueLen),
@@ -158,6 +173,39 @@ func New(cfg Config, sharedMemory []byte) (*Client, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+func resolveTimeouts(cfg Config) timeoutConfig {
+	fallback := cfg.RequestTimeout
+	if fallback <= 0 {
+		fallback = 0
+	}
+	connect := cfg.ConnectTimeout
+	if connect <= 0 {
+		connect = fallback
+	}
+	if connect <= 0 {
+		connect = defaultConnectTimeout
+	}
+	control := cfg.ControlTimeout
+	if control <= 0 {
+		control = fallback
+	}
+	if control <= 0 {
+		control = defaultControlTimeout
+	}
+	data := cfg.DataTimeout
+	if data <= 0 {
+		data = fallback
+	}
+	if data <= 0 {
+		data = defaultDataTimeout
+	}
+	return timeoutConfig{
+		connect: connect,
+		control: control,
+		data:    data,
+	}
 }
 
 func normalizeAddress(in string) (string, error) {
@@ -181,11 +229,11 @@ func normalizeAddress(in string) (string, error) {
 	return v, nil
 }
 
-func (c *Client) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if c.requestTimeout <= 0 {
+func (c *Client) withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, c.requestTimeout)
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (c *Client) validateRef(ref BufferRef) error {
@@ -332,7 +380,7 @@ func (c *Client) sendControlSerialized(ctx context.Context, msg zcopyproto.Messa
 }
 
 func (c *Client) sendAck(n int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), c.controlTimeout)
 	defer cancel()
 	return c.sendControlSerialized(ctx, zcopyproto.Message{
 		Op:  zcopyproto.OpAck,
@@ -365,7 +413,7 @@ func (c *Client) waitResult(ctx context.Context, reqID uint64, ch chan inboundRe
 }
 
 func (c *Client) hello() error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.requestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), c.controlTimeout)
 	defer cancel()
 
 	reqID := c.nextRequestID()
@@ -471,7 +519,7 @@ func (c *Client) EnsureBucket(ctx context.Context, bucket string) error {
 	if strings.TrimSpace(bucket) == "" {
 		return fmt.Errorf("s3rdmaclient: bucket must not be empty")
 	}
-	opCtx, cancel := c.withTimeout(ctx)
+	opCtx, cancel := c.withTimeout(ctx, c.controlTimeout)
 	defer cancel()
 
 	reqID := c.nextRequestID()
@@ -509,7 +557,7 @@ func (c *Client) PutZeroCopy(ctx context.Context, bucket, key string, ref Buffer
 	if strings.TrimSpace(bucket) == "" || strings.TrimSpace(key) == "" {
 		return fmt.Errorf("s3rdmaclient: bucket/key must not be empty")
 	}
-	opCtx, cancel := c.withTimeout(ctx)
+	opCtx, cancel := c.withTimeout(ctx, c.dataTimeout)
 	defer cancel()
 
 	reqID := c.nextRequestID()
@@ -589,7 +637,7 @@ func (c *Client) GetZeroCopy(ctx context.Context, bucket, key string, targetOffs
 		return BufferRef{}, fmt.Errorf("s3rdmaclient: bucket/key must not be empty")
 	}
 
-	opCtx, cancel := c.withTimeout(ctx)
+	opCtx, cancel := c.withTimeout(ctx, c.dataTimeout)
 	defer cancel()
 
 	reqID := c.nextRequestID()

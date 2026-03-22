@@ -127,6 +127,20 @@ func (c *fakeZCopyConn) SendMessageAt(_ context.Context, payload []byte, sharedO
 	return nil
 }
 
+func TestTimeoutsNormalizedDefaults(t *testing.T) {
+	got := (Timeouts{}).normalized()
+
+	if got.Control != defaultControlTimeout {
+		t.Fatalf("control timeout = %s, want %s", got.Control, defaultControlTimeout)
+	}
+	if got.Data != defaultDataTimeout {
+		t.Fatalf("data timeout = %s, want %s", got.Data, defaultDataTimeout)
+	}
+	if got.Idle != defaultIdleTimeout {
+		t.Fatalf("idle timeout = %s, want %s", got.Idle, defaultIdleTimeout)
+	}
+}
+
 func TestServiceHandlePutRespondsOKAndDoesNotStoreObject(t *testing.T) {
 	memStore := store.NewMemoryStore()
 	conn := &fakeZCopyConn{
@@ -138,7 +152,7 @@ func TestServiceHandlePutRespondsOKAndDoesNotStoreObject(t *testing.T) {
 			},
 		},
 	}
-	zc, err := newZCopyConn(conn)
+	zc, err := newZCopyConn(conn, Timeouts{})
 	if err != nil {
 		t.Fatalf("newZCopyConn: %v", err)
 	}
@@ -188,7 +202,7 @@ func TestServiceHandlePutDoesNotOverwritePreloadedObject(t *testing.T) {
 			},
 		},
 	}
-	zc, err := newZCopyConn(conn)
+	zc, err := newZCopyConn(conn, Timeouts{})
 	if err != nil {
 		t.Fatalf("newZCopyConn: %v", err)
 	}
@@ -224,7 +238,7 @@ func TestServiceHandleGetSendsMetaAndPayload(t *testing.T) {
 	memStore.PutLoadedObject("bench-bucket", "rdma-object", []byte("payload-by-rdma"), time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC))
 
 	conn := &fakeZCopyConn{}
-	zc, err := newZCopyConn(conn)
+	zc, err := newZCopyConn(conn, Timeouts{})
 	if err != nil {
 		t.Fatalf("newZCopyConn: %v", err)
 	}

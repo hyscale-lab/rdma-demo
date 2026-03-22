@@ -16,6 +16,12 @@ import (
 	"github.com/hyscale-lab/rdma-demo/internal/s3rdmaserver/store"
 )
 
+const (
+	defaultControlTimeout = 30 * time.Second
+	defaultDataTimeout    = 2 * time.Minute
+	defaultIdleTimeout    = 5 * time.Minute
+)
+
 // ObjectStore is the minimal readable state the zcopy service needs.
 type ObjectStore interface {
 	CreateBucket(name string)
@@ -27,13 +33,34 @@ type Service struct {
 	listener      awsrdmahttp.MessageListener
 	store         ObjectStore
 	maxObjectSize int64
+	timeouts      Timeouts
 }
 
-func NewService(listener awsrdmahttp.MessageListener, store ObjectStore, maxObjectSize int64) *Service {
+type Timeouts struct {
+	Control time.Duration
+	Data    time.Duration
+	Idle    time.Duration
+}
+
+func (t Timeouts) normalized() Timeouts {
+	if t.Control <= 0 {
+		t.Control = defaultControlTimeout
+	}
+	if t.Data <= 0 {
+		t.Data = defaultDataTimeout
+	}
+	if t.Idle <= 0 {
+		t.Idle = defaultIdleTimeout
+	}
+	return t
+}
+
+func NewService(listener awsrdmahttp.MessageListener, store ObjectStore, maxObjectSize int64, timeouts Timeouts) *Service {
 	return &Service{
 		listener:      listener,
 		store:         store,
 		maxObjectSize: maxObjectSize,
+		timeouts:      timeouts.normalized(),
 	}
 }
 
@@ -78,10 +105,20 @@ type zcopyConn struct {
 	closed   bool
 
 	wg sync.WaitGroup
+
+	controlTimeout time.Duration
+	dataTimeout    time.Duration
+	idleTimeout    time.Duration
 }
 
-func newZCopyConn(conn awsrdmahttp.MessageConn) (*zcopyConn, error) {
-	zc := &zcopyConn{conn: conn}
+func newZCopyConn(conn awsrdmahttp.MessageConn, timeouts Timeouts) (*zcopyConn, error) {
+	timeouts = timeouts.normalized()
+	zc := &zcopyConn{
+		conn:           conn,
+		controlTimeout: timeouts.Control,
+		dataTimeout:    timeouts.Data,
+		idleTimeout:    timeouts.Idle,
+	}
 
 	borrow, ok := conn.(awsrdmahttp.BorrowingMessageConn)
 	if !ok {
@@ -144,7 +181,11 @@ func (zc *zcopyConn) sendControl(msg zcopyproto.Message) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout := zc.controlTimeout
+	if timeout <= 0 {
+		timeout = defaultControlTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return zc.conn.SendMessage(ctx, payload)
 }
@@ -178,7 +219,7 @@ func (zc *zcopyConn) sendGetPayload(reqID uint64, payload []byte, dataOffset int
 		return fmt.Errorf("zcopy: invalid data_offset=%d", dataOffset)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), zc.dataTimeout)
 	defer cancel()
 
 	zc.sendMu.Lock()
@@ -196,7 +237,7 @@ func (zc *zcopyConn) sendGetPayload(reqID uint64, payload []byte, dataOffset int
 }
 
 func (zc *zcopyConn) recvControl() (zcopyproto.Message, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), zc.idleTimeout)
 	defer cancel()
 
 	payload, err := zc.conn.RecvMessage(ctx)
@@ -217,7 +258,7 @@ func (zc *zcopyConn) recvPayloadAt(size int, sharedOffset int) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), zc.dataTimeout)
 	defer cancel()
 
 	bmsg, err := zc.borrow.RecvBorrowedMessage(ctx)
@@ -236,7 +277,7 @@ func (zc *zcopyConn) recvPayloadAt(size int, sharedOffset int) error {
 }
 
 func (s *Service) serveConn(conn awsrdmahttp.MessageConn) {
-	zc, err := newZCopyConn(conn)
+	zc, err := newZCopyConn(conn, s.timeouts)
 	if err != nil {
 		log.WithError(err).Error("s3-rdma-server zcopy init failed")
 		_ = conn.Close()
