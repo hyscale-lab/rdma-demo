@@ -59,6 +59,25 @@ For live RDMA runs, point `--endpoint` at an RDMA-backed interface address, not 
   --endpoint 10.0.1.1:10191 \
   --bucket smoke-bucket \
   --key rdma-putget.bin \
+  --rdma-shared-memory-path /dev/shm/khala/smoke-verify.img \
+  --op put-get \
+  --payload-size 1024
+```
+
+## RDMA File-Backed Shared Memory
+
+When `--rdma-shared-memory-path` is set, the smoke tool creates or reuses that file, truncates it to `--rdma-shared-memory-size`, and mmaps it with `MAP_SHARED`.
+When the flag is empty, the smoke tool keeps the previous anonymous-mmap behavior.
+
+Recommended routine verification path:
+
+```bash
+./s3-rdma-smoke \
+  --transport rdma \
+  --endpoint 10.0.1.1:10191 \
+  --bucket smoke-bucket \
+  --key rdma-putget.bin \
+  --rdma-shared-memory-path /dev/shm/khala/smoke-verify.img \
   --op put-get \
   --payload-size 1024
 ```

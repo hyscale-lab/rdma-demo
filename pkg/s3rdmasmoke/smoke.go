@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -42,27 +44,28 @@ const (
 
 // Config describes one small smoke run against the standalone benchmark server.
 type Config struct {
-	Transport       string
-	Endpoint        string
-	Bucket          string
-	Key             string
-	Op              string
-	Verify          bool
-	PayloadSize     int
-	RequestTimeout  time.Duration
-	RDMAConnectTO   time.Duration
-	RDMAControlTO   time.Duration
-	RDMADataTO      time.Duration
-	RDMASharedMem   int
-	RDMAPutOffset   int
-	RDMAGetOffset   int
-	RDMAGetMaxSize  int
-	RDMALowCPU      bool
-	RDMAFrameSize   int
-	RDMASendDepth   int
-	RDMARecvDepth   int
-	RDMAInlineBytes int
-	RDMASignalIntvl int
+	Transport         string
+	Endpoint          string
+	Bucket            string
+	Key               string
+	Op                string
+	Verify            bool
+	PayloadSize       int
+	RequestTimeout    time.Duration
+	RDMAConnectTO     time.Duration
+	RDMAControlTO     time.Duration
+	RDMADataTO        time.Duration
+	RDMASharedMem     int
+	RDMASharedMemPath string
+	RDMAPutOffset     int
+	RDMAGetOffset     int
+	RDMAGetMaxSize    int
+	RDMALowCPU        bool
+	RDMAFrameSize     int
+	RDMASendDepth     int
+	RDMARecvDepth     int
+	RDMAInlineBytes   int
+	RDMASignalIntvl   int
 }
 
 // Result captures the useful outcome of a smoke run.
@@ -306,7 +309,7 @@ func runTCP(ctx context.Context, cfg Config) (Result, error) {
 }
 
 func runRDMA(ctx context.Context, cfg Config) (result Result, err error) {
-	shared, cleanup, err := newSharedMmap(cfg.RDMASharedMem)
+	shared, cleanup, err := newSharedMemory(cfg.RDMASharedMem, cfg.RDMASharedMemPath)
 	if err != nil {
 		return Result{}, fmt.Errorf("rdma smoke: mmap shared memory: %w", err)
 	}
@@ -532,7 +535,15 @@ func isExpectedRDMASmokeMissing(err error) bool {
 	return strings.Contains(msg, "key not found") || strings.Contains(msg, "no such key")
 }
 
-func newSharedMmap(size int) ([]byte, func() error, error) {
+func newSharedMemory(size int, sharedMemPath string) ([]byte, func() error, error) {
+	if strings.TrimSpace(sharedMemPath) != "" {
+		return newFileBackedSharedMemory(size, sharedMemPath)
+	}
+
+	return newAnonymousSharedMemory(size)
+}
+
+func newAnonymousSharedMemory(size int) ([]byte, func() error, error) {
 	b, err := syscall.Mmap(
 		-1,
 		0,
@@ -542,6 +553,52 @@ func newSharedMmap(size int) ([]byte, func() error, error) {
 	)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	return b, func() error {
+		return syscall.Munmap(b)
+	}, nil
+}
+
+func newFileBackedSharedMemory(size int, sharedMemPath string) ([]byte, func() error, error) {
+	if err := os.MkdirAll(filepath.Dir(sharedMemPath), 0o755); err != nil {
+		return nil, nil, fmt.Errorf("create shared memory dir: %w", err)
+	}
+
+	file, err := os.OpenFile(sharedMemPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open shared memory file: %w", err)
+	}
+
+	if err := file.Truncate(int64(size)); err != nil {
+		closeErr := file.Close()
+		if closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close shared memory file after truncate failure: %w", closeErr))
+		}
+		return nil, nil, fmt.Errorf("truncate shared memory file: %w", err)
+	}
+
+	b, err := syscall.Mmap(
+		int(file.Fd()),
+		0,
+		size,
+		syscall.PROT_READ|syscall.PROT_WRITE,
+		syscall.MAP_SHARED|syscall.MAP_POPULATE,
+	)
+	if err != nil {
+		closeErr := file.Close()
+		if closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close shared memory file after mmap failure: %w", closeErr))
+		}
+		return nil, nil, fmt.Errorf("mmap shared memory file: %w", err)
+	}
+
+	if err := file.Close(); err != nil {
+		unmapErr := syscall.Munmap(b)
+		if unmapErr != nil {
+			err = errors.Join(err, fmt.Errorf("munmap shared memory after close failure: %w", unmapErr))
+		}
+		return nil, nil, fmt.Errorf("close shared memory file: %w", err)
 	}
 
 	return b, func() error {

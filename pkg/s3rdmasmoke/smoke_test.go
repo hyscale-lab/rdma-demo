@@ -1,6 +1,8 @@
 package s3rdmasmoke
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +64,48 @@ func TestConfigValidateRejectsInvalidRDMARanges(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected validate error for oversized rdma put range")
+	}
+}
+
+func TestNewSharedMemoryWithFileBackedPath(t *testing.T) {
+	sharedMemPath := filepath.Join(t.TempDir(), "smoke-verify.img")
+
+	shared, cleanup, err := newSharedMemory(4096, sharedMemPath)
+	if err != nil {
+		t.Fatalf("newSharedMemory() error = %v", err)
+	}
+	defer func() {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			t.Fatalf("cleanup() error = %v", cleanupErr)
+		}
+	}()
+
+	if len(shared) != 4096 {
+		t.Fatalf("len(shared) = %d, want %d", len(shared), 4096)
+	}
+
+	info, err := os.Stat(sharedMemPath)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", sharedMemPath, err)
+	}
+	if info.Size() != 4096 {
+		t.Fatalf("file size = %d, want %d", info.Size(), 4096)
+	}
+}
+
+func TestNewSharedMemoryWithAnonymousFallback(t *testing.T) {
+	shared, cleanup, err := newSharedMemory(2048, "")
+	if err != nil {
+		t.Fatalf("newSharedMemory() error = %v", err)
+	}
+	defer func() {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			t.Fatalf("cleanup() error = %v", cleanupErr)
+		}
+	}()
+
+	if len(shared) != 2048 {
+		t.Fatalf("len(shared) = %d, want %d", len(shared), 2048)
 	}
 }
 

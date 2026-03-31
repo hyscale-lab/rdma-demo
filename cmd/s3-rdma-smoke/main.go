@@ -54,6 +54,7 @@ func usageText(name string) string {
 	fmt.Fprintf(&b, "  --rdma-control-timeout duration\n\t\tTimeout for RDMA control operations such as hello and ensure-bucket. Default: %s.\n", defaultRDMAControlTO)
 	fmt.Fprintf(&b, "  --rdma-data-timeout duration\n\t\tTimeout for RDMA PUT/GET payload operations. Default: %s.\n", defaultRDMADataTO)
 	fmt.Fprintf(&b, "  --rdma-shared-memory-size bytes\n\t\tShared mmap region size. Default: %d.\n", defaultRDMASharedMemSize)
+	b.WriteString("  --rdma-shared-memory-path path\n\t\tOptional file-backed shared memory path. When empty, use anonymous mmap.\n")
 	fmt.Fprintf(&b, "  --rdma-put-offset bytes\n\t\tPUT payload offset inside the shared memory region. Default: %d.\n", defaultRDMAPutOffset)
 	fmt.Fprintf(&b, "  --rdma-get-offset bytes\n\t\tGET target offset inside the shared memory region. Default: %d.\n", defaultRDMAGetOffset)
 	fmt.Fprintf(&b, "  --rdma-get-max-size bytes\n\t\tMaximum readable GET size inside the shared memory region. Default: %d.\n", defaultRDMAGetMaxSize)
@@ -83,6 +84,7 @@ func main() {
 	rdmaControlTimeout := flag.Duration("rdma-control-timeout", defaultRDMAControlTO, "timeout for RDMA control operations")
 	rdmaDataTimeout := flag.Duration("rdma-data-timeout", defaultRDMADataTO, "timeout for RDMA PUT/GET payload operations")
 	rdmaSharedMem := flag.Int("rdma-shared-memory-size", defaultRDMASharedMemSize, "RDMA shared mmap region size")
+	rdmaSharedMemPath := flag.String("rdma-shared-memory-path", "", "optional file-backed RDMA shared memory path")
 	rdmaPutOffset := flag.Int("rdma-put-offset", defaultRDMAPutOffset, "RDMA PUT offset in shared memory")
 	rdmaGetOffset := flag.Int("rdma-get-offset", defaultRDMAGetOffset, "RDMA GET offset in shared memory")
 	rdmaGetMaxSize := flag.Int("rdma-get-max-size", defaultRDMAGetMaxSize, "RDMA GET max size in shared memory")
@@ -95,27 +97,28 @@ func main() {
 	flag.Parse()
 
 	result, err := s3rdmasmoke.Run(context.Background(), s3rdmasmoke.Config{
-		Transport:       *transport,
-		Endpoint:        *endpoint,
-		Bucket:          *bucket,
-		Key:             *key,
-		Op:              *op,
-		Verify:          *verify,
-		PayloadSize:     *payloadSize,
-		RequestTimeout:  *requestTimeout,
-		RDMAConnectTO:   *rdmaConnectTimeout,
-		RDMAControlTO:   *rdmaControlTimeout,
-		RDMADataTO:      *rdmaDataTimeout,
-		RDMASharedMem:   *rdmaSharedMem,
-		RDMAPutOffset:   *rdmaPutOffset,
-		RDMAGetOffset:   *rdmaGetOffset,
-		RDMAGetMaxSize:  *rdmaGetMaxSize,
-		RDMALowCPU:      *rdmaLowCPU,
-		RDMAFrameSize:   *rdmaFramePayload,
-		RDMASendDepth:   *rdmaSendDepth,
-		RDMARecvDepth:   *rdmaRecvDepth,
-		RDMAInlineBytes: *rdmaInline,
-		RDMASignalIntvl: *rdmaSignalIntvl,
+		Transport:         *transport,
+		Endpoint:          *endpoint,
+		Bucket:            *bucket,
+		Key:               *key,
+		Op:                *op,
+		Verify:            *verify,
+		PayloadSize:       *payloadSize,
+		RequestTimeout:    *requestTimeout,
+		RDMAConnectTO:     *rdmaConnectTimeout,
+		RDMAControlTO:     *rdmaControlTimeout,
+		RDMADataTO:        *rdmaDataTimeout,
+		RDMASharedMem:     *rdmaSharedMem,
+		RDMASharedMemPath: *rdmaSharedMemPath,
+		RDMAPutOffset:     *rdmaPutOffset,
+		RDMAGetOffset:     *rdmaGetOffset,
+		RDMAGetMaxSize:    *rdmaGetMaxSize,
+		RDMALowCPU:        *rdmaLowCPU,
+		RDMAFrameSize:     *rdmaFramePayload,
+		RDMASendDepth:     *rdmaSendDepth,
+		RDMARecvDepth:     *rdmaRecvDepth,
+		RDMAInlineBytes:   *rdmaInline,
+		RDMASignalIntvl:   *rdmaSignalIntvl,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
